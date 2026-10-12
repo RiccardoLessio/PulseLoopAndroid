@@ -47,9 +47,13 @@ object LuckRingDecoder {
             LuckRingDataType.REAL_BP -> decodeBP(p).ifEmpty { listOf(RingDecodedEvent.CommandAck(LuckRingDataType.REAL_BP)) }
             LuckRingDataType.HISTORY_BP -> decodeBP(p)
 
+            // EXPERIMENT (issue #112), not for merge: the reporter suspects the HRV byte's top bit is a
+            // flag. This build drops it so the values can be compared against what LuckRing shows.
             LuckRingDataType.REAL_HRV ->
-                decodeLive(p, now) { value, ts -> RingDecodedEvent.HrvSample(value.toInt(), ts) }
-            LuckRingDataType.HISTORY_HRV -> decodeHistory(p, MeasurementKind.HRV)
+                decodeLive(p, now) { value, ts -> RingDecodedEvent.HrvSample(value.toInt() and 0x7F, ts) }
+            LuckRingDataType.HISTORY_HRV -> decodeHistory(p, MeasurementKind.HRV).map { e ->
+                if (e is RingDecodedEvent.HistoryMeasurement) e.copy(value = (e.value.toInt() and 0x7F).toDouble()) else e
+            }
 
             LuckRingDataType.REAL_TEMP -> decodeTemperature(p, history = false)
             LuckRingDataType.HISTORY_TEMP -> decodeTemperature(p, history = true)

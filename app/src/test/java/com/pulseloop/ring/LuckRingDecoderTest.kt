@@ -123,6 +123,15 @@ class LuckRingDecoderTest {
         assertTrue(kinds.contains(MeasurementKind.BLOOD_PRESSURE_DIASTOLIC to 76.0))
     }
 
+    /** EXPERIMENT (issue #112): the HRV byte's top bit is dropped — 0xA8 from the reporter's ring reads 40. */
+    @Test
+    fun `history HRV drops the top bit in the experiment build`() {
+        val payload = envelope(2, listOf(LuckRingBytes.le32(base) + listOf<UByte>(0xA8u), LuckRingBytes.le32(base + 60) + listOf<UByte>(107u)))
+        val values = LuckRingDecoder.decode(frame(42u, payload))
+            .mapNotNull { (it as? RingDecodedEvent.HistoryMeasurement)?.value }
+        assertEquals(listOf(40.0, 107.0), values)
+    }
+
     // MARK: Sport
 
     @Test
