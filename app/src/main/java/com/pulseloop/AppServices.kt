@@ -14,6 +14,9 @@ import com.pulseloop.service.LiveWorkoutManager
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.widgets.WidgetSnapshotPublisher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * The app's long-lived services, one set per process (issue #113).
@@ -63,6 +66,9 @@ class AppServices private constructor(context: Context) {
     )
 
     private val startup = StartupGate()
+
+    /** Where the one-shot startup runs: process-long, so a disposed composition can't cancel it. */
+    val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
      * True for the first caller in this process only. The app's one-shot startup (wiring the ring

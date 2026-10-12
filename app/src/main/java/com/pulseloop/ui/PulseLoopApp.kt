@@ -162,51 +162,56 @@ fun PulseLoopApp() {
         LaunchedEffect(Unit) {
             if (!isFirstComposition) return@LaunchedEffect
 
-            // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
-            // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
-            // history, and on-demand readings come from the Vitals "Measure" button.
-            bleClient.onConnected = { coordinator.runStartupSequence() }
+            // Run in the process scope, not this effect's: the gate above is already claimed, so if
+            // a rotation or theme change disposed this composition mid-startup, nothing would ever
+            // finish it (issue #113 review).
+            services.startupScope.launch {
+                // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
+                // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
+                // history, and on-demand readings come from the Vitals "Measure" button.
+                bleClient.onConnected = { coordinator.runStartupSequence() }
 
-            // Wire firmware read → persist to DB
-            bleClient.onFirmwareRead = { fw ->
-                kotlinx.coroutines.runBlocking {
-                    val dev = db.deviceDao().current()
-                    // Standard DIS (2A26/2A28) firmware is only a fallback. The official app
-                    // displays the custom-protocol device-info version ("…V138"), not the DIS
-                    // string, so never overwrite a value that already carries the "V" version.
-                    if (dev != null && (dev.firmwareVersion.isNullOrBlank() || !dev.firmwareVersion!!.contains("V"))) {
-                        db.deviceDao().upsert(dev.copy(firmwareVersion = fw, updatedAt = System.currentTimeMillis()))
+                // Wire firmware read → persist to DB
+                bleClient.onFirmwareRead = { fw ->
+                    kotlinx.coroutines.runBlocking {
+                        val dev = db.deviceDao().current()
+                        // Standard DIS (2A26/2A28) firmware is only a fallback. The official app
+                        // displays the custom-protocol device-info version ("…V138"), not the DIS
+                        // string, so never overwrite a value that already carries the "V" version.
+                        if (dev != null && (dev.firmwareVersion.isNullOrBlank() || !dev.firmwareVersion!!.contains("V"))) {
+                            db.deviceDao().upsert(dev.copy(firmwareVersion = fw, updatedAt = System.currentTimeMillis()))
+                        }
                     }
                 }
-            }
 
-            // Start services
-            persistence.start()
-            batteryAlerts.start()
-            coordinator.start()
-            summaryCoordinator.start()
-            checkinDataTrigger.start()
+                // Start services
+                persistence.start()
+                batteryAlerts.start()
+                coordinator.start()
+                summaryCoordinator.start()
+                checkinDataTrigger.start()
 
-            // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
-            // process restart — the live GATT is gone, so the views would otherwise show a
-            // false "Connected". Reset until a real connection re-confirms it.
-            db.deviceDao().current()?.let { dev ->
-                if (dev.stateRaw == "CONNECTED" || dev.stateRaw == "CONNECTING") {
-                    db.deviceDao().upsert(dev.copy(stateRaw = "DISCONNECTED", updatedAt = System.currentTimeMillis()))
+                // Stale-state guard: a persisted "CONNECTED"/"CONNECTING" must not survive a
+                // process restart — the live GATT is gone, so the views would otherwise show a
+                // false "Connected". Reset until a real connection re-confirms it.
+                db.deviceDao().current()?.let { dev ->
+                    if (dev.stateRaw == "CONNECTED" || dev.stateRaw == "CONNECTING") {
+                        db.deviceDao().upsert(dev.copy(stateRaw = "DISCONNECTED", updatedAt = System.currentTimeMillis()))
+                    }
                 }
+
+                // Auto-reconnect to last-known ring if any
+                if (bleClient.hasPermissions()) {
+                    bleClient.connectLastKnown()
+                }
+
+                // Schedule periodic background sync (matches official app behavior)
+                RingSyncWorker.schedule(context.applicationContext)
+
+                // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
+                // reflects only real ring data. Demo data is seeded exclusively via the
+                // confirmation-gated "Reseed Demo Data" button in Settings.
             }
-
-            // Auto-reconnect to last-known ring if any
-            if (bleClient.hasPermissions()) {
-                bleClient.connectLastKnown()
-            }
-
-            // Schedule periodic background sync (matches official app behavior)
-            RingSyncWorker.schedule(context)
-
-            // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
-            // reflects only real ring data. Demo data is seeded exclusively via the
-            // confirmation-gated "Reseed Demo Data" button in Settings.
         }
 
         // ── Connection lifecycle on foreground/background ────────────────
