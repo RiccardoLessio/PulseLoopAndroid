@@ -288,7 +288,10 @@ object YCBTHealthRecords {
             var start = segment.startSeconds.toLong()
             if (index == 0 && start - headerStart in 0 until SEAM_SECONDS) start = headerStart.toLong()
             var end = segment.startSeconds.toLong() + segment.seconds
-            val next = ordered.getOrNull(index + 1)?.startSeconds?.toLong() ?: headerEnd.toLong()
+            // The next segment to start at or after this one's end: a segment nested inside this
+            // one must not hide the seam to the one that really follows it.
+            val next = ordered.firstOrNull { it.startSeconds.toLong() >= end }?.startSeconds?.toLong()
+                ?: headerEnd.toLong()
             if (next - end in 0 until SEAM_SECONDS) end = next
             val from = kotlin.math.round((start - headerStart) / 60.0).toInt()
             val until = kotlin.math.round((end - headerStart) / 60.0).toInt()

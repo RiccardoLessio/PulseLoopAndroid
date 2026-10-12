@@ -173,7 +173,11 @@ object SleepRecordDeletion {
         remaining: List<SleepStageBlockEntity>,
         bridge: SleepGapBridge = SleepGapBridge.NONE,
     ) {
-        val plan = planRestate(session, remaining, bridge)
+        // A gap the night already held stays held, whatever the bridge says today: the Bedtime
+        // window that bridged it may have aged out of the 30-day log, or the settings changed, and
+        // no re-sync can re-merge a night the ring no longer has (issue #116 review).
+        val before = db.sleepStageBlockDao().forSession(session.id)
+        val plan = planRestate(session, remaining, bridge.keepingGapsOf(before))
         if (plan.isEmpty()) {
             db.sleepSessionDao().deleteById(session.id)
             return

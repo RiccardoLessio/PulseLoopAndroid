@@ -485,6 +485,22 @@ class YCBTHealthRecordsTest {
         assertEquals(3, event.stages.count { it == SleepStage.AWAKE })
     }
 
+    /** A segment nested inside another must not hide the seam to the one that follows. */
+    @Test
+    fun `a nested segment does not reopen the seam after its container`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start, start + 20 * 60,
+            listOf(
+                Triple(0xf2, start, 11 * 60 + 29),                  // ends at 11.48 min
+                Triple(0xf1, start + 100, 100),                     // nested inside the first
+                Triple(0xf3, start + 11 * 60 + 30, 8 * 60 + 30),    // starts at 11.5 min
+            ),
+        )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
+    }
+
     /** Like [sleepRecord], but each segment carries its own start: `(tag, startSeconds, seconds)`. */
     private fun sleepRecordAt(
         startSeconds: Int,

@@ -172,4 +172,34 @@ class SleepGapsTest {
         // The 72 minutes between the records then count as awake, as shorter gaps already do.
         assertEquals(72, awakeMinutes(whole.single()))
     }
+
+    // ── Review follow-ups ─────────────────────────────────────────────────
+
+    /** A clock window whose start equals its end means "gate off", not "asleep all day". */
+    @Test
+    fun `an all-day clock window bridges nothing`() {
+        val bridge = SleepGapBridge.forWindows(true, null, 22 * 60, 22 * 60, utc)
+        assertFalse(bridge.bridges(at(15, 0), at(23, 0)))
+        assertFalse(SleepGapBridge.forWindows(true, null, 0, 24 * 60, utc).bridges(at(15, 0), at(23, 0)))
+    }
+
+    /**
+     * A delete or edit long after the night was written must not split a gap the night already
+     * held, even though the Bedtime window that bridged it has aged out; a new gap it opens is still
+     * judged by the bridge.
+     */
+    @Test
+    fun `a restate keeps the gaps the night already held and judges new ones`() {
+        val first = at(0, 51)
+        val middle = at(6, 56)
+        val last = at(8, 30)
+        val before = listOf(
+            block(first, 293, first, first),                                // 00:51–05:44
+            block(middle, 71, middle, first),                               // 06:56–08:07
+            block(last, 30, last, first),                                   // 08:30–09:00
+        )
+        val kept = SleepGapBridge.NONE.keepingGapsOf(before)
+        assertTrue(kept.bridges(at(5, 44), at(6, 56)))                     // already open
+        assertFalse(kept.bridges(at(5, 44), at(8, 30)))                    // opened by deleting the middle
+    }
 }
