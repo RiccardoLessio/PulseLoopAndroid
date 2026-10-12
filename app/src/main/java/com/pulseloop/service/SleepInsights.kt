@@ -169,15 +169,52 @@ fun awakeMinutes(blocks: List<SleepStageBlockEntity>): Int {
 
 /**
  * The waking between two consecutive ring records of one session, in minutes — 0 for the one-minute
- * seam (issue #63). The one rule both the Awake figure ([awakeMinutes]) and the RECORDS card's
- * "Awake Xm between" line read, so the two cannot disagree about the same gap (issue #81).
+ * seam (issue #63). The one rule the Awake figure ([awakeMinutes]), the RECORDS card's
+ * "Awake Xm between" line and the hypnogram ([hypnogramBlocks]) read, so they cannot disagree
+ * about the same gap (issue #81).
  *
- * No upper cap is needed: a session never holds a gap of [SleepSegmentation.SESSION_GAP_MINUTES]
- * or more — the write path and `SleepRecordDeletion` both split there.
+ * **Rounded, not truncated (issue #111).** A record's stored end is its start plus a whole number
+ * of minutes, so it sits up to 30 s either side of where the ring ended it. Truncating that gap
+ * turned a real 2m07 waking (ended 07:08:53, stored 07:09:14, next record 07:11:00 → 1m46) into 1
+ * and dropped it under the threshold. Rounding keeps the seam out: the ring reopens a record 60 s
+ * after closing one, which the same ±30 s can bring to at most 90 s — so a tie rounds *down*, and
+ * that is still 1 minute.
+ *
+ * No upper cap is needed: a session only holds a gap of [SleepSegmentation.SESSION_GAP_MINUTES] or
+ * more when the wearer's own Bedtime window spans it (issue #105), and then it is a waking too.
  */
 fun betweenRecordAwakeMinutes(earlier: SleepRecordRun, later: SleepRecordRun): Int {
-    val gapMinutes = ((later.startAt - earlier.endAt) / 60_000L).toInt()
+    val gapMinutes = Math.floorDiv(later.startAt - earlier.endAt + 29_999L, 60_000L).toInt()
     return if (gapMinutes >= 2) gapMinutes else 0
+}
+
+/**
+ * The blocks to draw on the hypnogram: the session's own, plus an AWAKE block over each gap between
+ * records that [betweenRecordAwakeMinutes] counts as a waking (issue #111). Without it the chart drew
+ * two records back to back while the Awake card and the RECORDS card both counted the minutes
+ * between them. The added block covers the hole the chart would otherwise leave; it is for display
+ * only and must not be fed back into [awakeMinutes], which counts these gaps itself.
+ */
+fun hypnogramBlocks(blocks: List<SleepStageBlockEntity>): List<SleepStageBlockEntity> {
+    val runs = sleepRecordRuns(blocks)
+    if (runs.size < 2) return blocks
+    val gaps = (0 until runs.lastIndex).mapNotNull { i ->
+        val earlier = runs[i]
+        val later = runs[i + 1]
+        if (betweenRecordAwakeMinutes(earlier, later) == 0) return@mapNotNull null
+        val fromMinute = earlier.blocks.maxOf { it.startMinute + it.durationMinutes }
+        val untilMinute = later.blocks.minOf { it.startMinute }
+        if (untilMinute <= fromMinute) return@mapNotNull null
+        SleepStageBlockEntity(
+            id = "gap-${earlier.blocks.first().sessionId}-$fromMinute",
+            sessionId = earlier.blocks.first().sessionId,
+            startAt = earlier.endAt,
+            startMinute = fromMinute,
+            durationMinutes = untilMinute - fromMinute,
+            stageRaw = SleepStage.AWAKE.name,
+        )
+    }
+    return blocks + gaps
 }
 
 /**

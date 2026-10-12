@@ -918,3 +918,19 @@ things to preserve:
 - **Verbose transport logging is a driver opt-in** (`WearableDriver.verboseTransportDiagnostics`,
   on for CRP only), and its log lines carry the frame's route (`diagnosticRoute`) — never its payload.
   An undecoded frame is still logged `unknown` and exported whole, per the section above.
+
+## A gap is a waking only if it is real time, and the Bedtime window outranks the hour rule (issues #111, #105)
+
+- **Sub-minute holes are seams.** `YCBTHealthRecords.placeStages` closes any hole shorter than 60 s
+  of real time between a record's segments, and between them and the record's own bounds. The ring
+  leaves a one-second hole between segments, and rounding each end to the minute grid independently
+  could still leave a whole AWAKE minute in it (315.48 → 315, 315.5 → 316).
+- **The gap between two records is rounded, ties down** (`betweenRecordAwakeMinutes`). A stored
+  record end is its start plus whole minutes, so ±30 s from the ring's. Truncation lost a real 2m07
+  waking; a tie rounding up would count the ring's 60 s reopen seam (measured as 90 s) as 2 minutes.
+- **The hypnogram draws the counted gaps** (`hypnogramBlocks`), display-only. Never feed those
+  blocks to `awakeMinutes`, which counts the gaps itself.
+- **An hour-plus gap inside the wearer's Bedtime window stays one night** (`SleepGapBridge`). Off
+  unless quiet hours are on; Bedtime windows decide when the night has any, else the clock window.
+  The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
+  record delete would split a night the next sync merges back.

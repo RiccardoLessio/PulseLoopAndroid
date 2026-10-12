@@ -107,7 +107,7 @@ object DataRepairs {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = "sleepDayEarlyCopyRepair.v1"
         if (prefs.getBoolean(key, false)) return
-        SleepDayEarlyCopies.repair(db)
+        SleepDayEarlyCopies.repair(db, com.pulseloop.service.SleepGapBridge.fromSettings(context))
         prefs.edit().putBoolean(key, true).apply()
     }
 }

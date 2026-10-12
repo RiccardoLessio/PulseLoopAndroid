@@ -440,4 +440,79 @@ class YCBTHealthRecordsTest {
         }
         return out.toByteArray()
     }
+
+    // ── Issue #111: a one-second seam is not a waking ─────────────────────
+
+    /**
+     * The reporter's Oct 8–9 night: LIGHT from 04:52:06 for 748 s ends at 05:04:34 and REM starts at
+     * 05:04:35. Against the record's start that is minute 315.48 (rounds to 315) and 315.5 (rounds to
+     * 316), so minute 315 used to keep the AWAKE filler.
+     */
+    @Test
+    fun `a one-second seam between segments leaves no awake minute`() {
+        val start = 0x31def01c
+        val lightStart = start + 303 * 60 + 1
+        val remStart = lightStart + 748 + 1                 // LIGHT ends at 315.48 min, REM opens at 315.5
+        val end = remStart + 30 * 60
+        val record = sleepRecordAt(
+            start, end,
+            listOf(Triple(0xf1, start, 303 * 60 + 1), Triple(0xf2, lightStart, 748), Triple(0xf3, remStart, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
+    }
+
+    /** The comment on #111: the last stage ends at 06:58:33 and the record at 06:58:34. */
+    @Test
+    fun `a one-second seam before the record's end leaves no awake minute`() {
+        val start = 0x31def01c + 20
+        val end = start + 120 * 60 + 31
+        val record = sleepRecordAt(start, end, listOf(Triple(0xf2, start, 120 * 60 + 30)))
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(0, event.stages.count { it == SleepStage.AWAKE })
+    }
+
+    /** A hole the ring really left — a minute or more — still reads as wake. */
+    @Test
+    fun `a gap of a minute or more between segments stays awake`() {
+        val start = 0x31def01c
+        val record = sleepRecordAt(
+            start, start + 63 * 60,
+            listOf(Triple(0xf2, start, 30 * 60), Triple(0xf1, start + 33 * 60, 30 * 60)),
+        )
+        val event = YCBTHealthRecords.sleep(record).first() as RingDecodedEvent.SleepTimeline
+        assertEquals(63, event.stages.size)
+        assertEquals(3, event.stages.count { it == SleepStage.AWAKE })
+    }
+
+    /** Like [sleepRecord], but each segment carries its own start: `(tag, startSeconds, seconds)`. */
+    private fun sleepRecordAt(
+        startSeconds: Int,
+        endSeconds: Int,
+        segments: List<Triple<Int, Int, Int>>,
+    ): ByteArray {
+        val out = mutableListOf<Byte>()
+        fun u16(value: Int) {
+            out.add((value and 0xFF).toByte())
+            out.add(((value shr 8) and 0xFF).toByte())
+        }
+        fun u32(value: Int) {
+            u16(value and 0xFFFF)
+            u16((value shr 16) and 0xFFFF)
+        }
+        out.add(0xaf.toByte())
+        out.add(0xfa.toByte())
+        u16(20 + segments.size * 8)
+        u32(startSeconds)
+        u32(endSeconds)
+        repeat(8) { out.add(0) }
+        for ((tag, at, seconds) in segments) {
+            out.add(tag.toByte())
+            u32(at)
+            out.add((seconds and 0xFF).toByte())
+            out.add(((seconds shr 8) and 0xFF).toByte())
+            out.add(((seconds shr 16) and 0xFF).toByte())
+        }
+        return out.toByteArray()
+    }
 }

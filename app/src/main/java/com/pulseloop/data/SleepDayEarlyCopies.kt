@@ -37,7 +37,10 @@ object SleepDayEarlyCopies {
      * Find and remove every stored copy, restating each session it touched from what remains.
      * Returns the number of blocks removed. Idempotent: a second run finds nothing.
      */
-    suspend fun repair(db: PulseLoopDatabase): Int = db.withTransaction {
+    suspend fun repair(
+        db: PulseLoopDatabase,
+        bridge: com.pulseloop.service.SleepGapBridge = com.pulseloop.service.SleepGapBridge.NONE,
+    ): Int = db.withTransaction {
         val sessions = db.sleepSessionDao().all().filter { it.sourceRaw !in DEMO_SOURCES }
         if (sessions.isEmpty()) return@withTransaction 0
         val blocks = db.sleepStageBlockDao().forSessions(sessions.map { it.id })
@@ -47,7 +50,7 @@ object SleepDayEarlyCopies {
         for (session in sessions) {
             val own = bySession[session.id] ?: continue
             if (own.none { it in strays }) continue
-            SleepRecordDeletion.restateSession(db, session, own.filterNot { it in strays })
+            SleepRecordDeletion.restateSession(db, session, own.filterNot { it in strays }, bridge)
         }
         strays.size
     }
