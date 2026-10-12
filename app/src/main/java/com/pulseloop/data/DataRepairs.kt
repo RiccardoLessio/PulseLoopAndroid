@@ -107,7 +107,8 @@ object DataRepairs {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = "sleepDayEarlyCopyRepair.v1"
         if (prefs.getBoolean(key, false)) return
-        SleepDayEarlyCopies.repair(db)
+        // Null = no ring paired yet: retry on a later launch rather than mark it done.
+        SleepDayEarlyCopies.repair(db) ?: return
         prefs.edit().putBoolean(key, true).apply()
     }
 }

@@ -126,6 +126,11 @@ class CRPSyncEngine(private val writer: RingCommandWriter?) : RingSyncEngine {
         send(CRPProtocol.queryTimingHrvHistory())
         send(CRPProtocol.queryTimingStressHistory())
         send(CRPProtocol.queryHistoryTemp())
+        // The ring dates its sleep replies by its own clock against the 20:00 turnover, and the
+        // decoder by the phone's when the reply lands. Straddling 20:00, the two disagree by a day
+        // and the night is filed a day early again — #107's bug, after #109's one-time repair has
+        // run. So a pass this close to 20:00 leaves sleep to the next one (~30 min later).
+        if (CRPDecoder.nearSleepDayRollover(java.time.Instant.now())) return
         send(CRPProtocol.queryHistorySleep())
         sendSleepBackfill()
     }
