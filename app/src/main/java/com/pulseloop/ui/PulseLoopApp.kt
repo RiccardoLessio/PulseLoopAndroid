@@ -30,16 +30,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.pulseloop.AppServices
 import com.pulseloop.coach.orchestration.CoachOrchestrator
 import com.pulseloop.coach.openai.OpenAIResponsesClient
 import com.pulseloop.coach.tools.*
-import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.diagnostics.DiagnosticsRepository
 import com.pulseloop.diagnostics.DiagnosticsViewModel
-import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.service.*
-import com.pulseloop.coach.summaries.CoachSummaryCoordinator
-import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.ui.components.AppHeader
 import com.pulseloop.ui.screens.*
 import com.pulseloop.ui.theme.PulseLoopTheme
@@ -66,43 +63,24 @@ fun PulseLoopApp() {
         val context = LocalContext.current
 
         // ── Singletons ───────────────────────────────────────────────────
-        val db = remember { PulseLoopDatabase.getInstance(context) }
-        val bleClient = remember { RingBLEClient(context) }
-        val apiKeyStore = remember { ApiKeyStore(context) }
-        val coordinator = remember { RingSyncCoordinator(bleClient, db, apiKeyStore) }
-        val gpsRecorder = remember { GpsRouteRecorder(context, db) }
-        val liveWorkout = remember { LiveWorkoutManager(coordinator, db, gpsRecorder, context) }
-        val persistence = remember {
-            // Every persisted ring-sync batch republishes the widget snapshot (debounced 2 s),
-            // mirroring the iOS PulseDataChange → WidgetSnapshotPublisher pipeline.
-            EventPersistenceSubscriber(
-                context, db,
-                onDataPersisted = {
-                    com.pulseloop.widgets.WidgetSnapshotPublisher.publishDebounced(context)
-                },
-            )
-        }
-        val batteryAlerts = remember { com.pulseloop.service.BatteryAlertMonitor(context) }
-        val providerStore = remember { com.pulseloop.coach.config.CoachProviderSettingsStore(context) }
-        val summaryCoordinator = remember { CoachSummaryCoordinator(db, apiKeyStore, providerStore) }
-        // iOS #94: runs the due check-in slot the moment a full sync completes, so a
-        // slot the periodic worker skipped for stale data is delivered a few minutes
-        // later instead of being lost. Same app-lifetime lifecycle as the coordinator.
-        val checkinDataTrigger = remember {
-            com.pulseloop.notifications.CoachNotificationDataTrigger(
-                context = context,
-                checkinSettings = {
-                    com.pulseloop.notifications.CoachCheckinSettings(
-                        coachEnabled = apiKeyStore.coachEnabled,
-                        notificationsEnabled = apiKeyStore.notificationsEnabled,
-                        apiKey = apiKeyStore.apiKey,
-                        model = apiKeyStore.model,
-                        morningHour = apiKeyStore.morningHour,
-                        eveningHour = apiKeyStore.eveningHour,
-                    )
-                },
-            )
-        }
+        // Process-scoped (issue #113): this composition is rebuilt with the Activity on every
+        // configuration change, and a second RingBLEClient would find the first still holding
+        // the ring. See AppServices.
+        val services = remember { AppServices.get(context) }
+        val db = services.db
+        val bleClient = services.bleClient
+        val apiKeyStore = services.apiKeyStore
+        val coordinator = services.coordinator
+        val liveWorkout = services.liveWorkout
+        val persistence = services.persistence
+        val batteryAlerts = services.batteryAlerts
+        val providerStore = services.providerStore
+        val summaryCoordinator = services.summaryCoordinator
+        val checkinDataTrigger = services.checkinDataTrigger
+        // Whether this composition is the process's first. A later one (a recreated Activity)
+        // finds the ring already wired and connected, so it skips the one-shot startup below and
+        // must not treat its first ON_START as already handled by it.
+        val isFirstComposition = remember { services.claimStartup() }
 
         // ── Coach wiring ─────────────────────────────────────────────────
         // Both the client AND the feature flags are resolved per turn through
@@ -180,8 +158,10 @@ fun PulseLoopApp() {
             }
         }
 
-        // ── Start services (one-shot on composition) ─────────────────────
+        // ── Start services (one-shot per process) ────────────────────────
         LaunchedEffect(Unit) {
+            if (!isFirstComposition) return@LaunchedEffect
+
             // Wire onConnected → run the startup/history sync only (matches iOS). Connecting
             // does NOT force a measurement; the ring's own periodic monitoring is pulled in via
             // history, and on-demand readings come from the Vitals "Measure" button.
@@ -232,8 +212,8 @@ fun PulseLoopApp() {
         // ── Connection lifecycle on foreground/background ────────────────
         // ON_START: re-attempt the link. The OS may have torn the GATT down during Doze
         // (autoConnect=false won't recover it), so reconnect on every foreground so the user
-        // never has to force-close to reconnect. The first ON_START is handled by the
-        // LaunchedEffect above, so skip it here.
+        // never has to force-close to reconnect. The process's first ON_START is handled by the
+        // LaunchedEffect above, so skip it here; a recreated Activity's first one is not.
         // ON_STOP: drop the live link a short grace period after backgrounding so the ring can
         // sleep (a held-open link keeps the ~17mAh ring awake and blocks its advertising). This
         // is a TRANSIENT disconnect — it does NOT set the user stay-off flag, so ON_START silently
@@ -243,7 +223,7 @@ fun PulseLoopApp() {
         val lifecycleOwner = LocalLifecycleOwner.current
         val bgDisconnectScope = rememberCoroutineScope()
         DisposableEffect(lifecycleOwner) {
-            var isFirstStart = true
+            var isFirstStart = isFirstComposition
             var bgDisconnectJob: Job? = null
             val observer = LifecycleEventObserver { _, event ->
                 when (event) {
