@@ -126,12 +126,38 @@ class SleepDayEarlyCopiesTest {
         assertTrue(SleepDayEarlyCopies.strayBlocks(mondayNight + sundayNight).isEmpty())
     }
 
+    /** [night], re-based so its record starts at [start] (epoch ms). */
+    private fun nightAt(start: Long, sessionId: String): List<SleepStageBlockEntity> {
+        val base = night(98, sessionId)
+        val delta = start - base.first().recordStartAt
+        return base.map { it.copy(startAt = it.startAt + delta, recordStartAt = it.recordStartAt + delta) }
+    }
+
+    /**
+     * Across a real DST change the copy sits 23 or 25 h before its source — the length of the local
+     * day between the two anchor midnights. Europe/Paris falls back on Oct 25 2026 (a 25 h day) and
+     * springs forward on Mar 29 2026 (23 h). A night from 22:38 is anchored 82 min before midnight.
+     */
     @Test
     fun `copies shifted across a DST change are found`() {
-        for (shift in listOf(23 * hour, 25 * hour)) {
-            val later = night(98, "later", dayOffset = shift)
+        val paris = java.time.ZoneId.of("Europe/Paris")
+        for ((wake, shift) in listOf("2026-10-26" to 25 * hour, "2026-03-30" to 23 * hour)) {
+            val anchor = java.time.LocalDate.parse(wake).atStartOfDay(paris).toInstant().toEpochMilli() - 82 * minute
+            val later = nightAt(anchor, "later")
             val copy = copyOf(later, "earlier", shift)
-            assertEquals("shift ${shift / hour} h", copy.toSet(), SleepDayEarlyCopies.strayBlocks(later + copy))
+            assertEquals("shift ${shift / hour} h", copy.toSet(), SleepDayEarlyCopies.strayBlocks(later + copy, paris))
+        }
+    }
+
+    /** 23/25 h is tried only where a DST change falls: on an ordinary day it is not one calendar day. */
+    @Test
+    fun `a 23 or 25 hour shift on an ordinary day is not a copy`() {
+        val paris = java.time.ZoneId.of("Europe/Paris")
+        val anchor = java.time.LocalDate.parse("2026-09-28").atStartOfDay(paris).toInstant().toEpochMilli() - 82 * minute
+        for (shift in listOf(23 * hour, 25 * hour)) {
+            val later = nightAt(anchor, "later")
+            val copy = copyOf(later, "earlier", shift)
+            assertTrue("shift ${shift / hour} h", SleepDayEarlyCopies.strayBlocks(later + copy, paris).isEmpty())
         }
     }
 
