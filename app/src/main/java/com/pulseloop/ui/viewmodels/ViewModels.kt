@@ -1216,7 +1216,10 @@ class VitalDetailViewModel(
     fun next() {
         if (!canGoForward()) return
         val st = _state.value
-        _state.update { it.copy(anchor = VitalPeriods.step(st.period, st.anchor, 1)) }
+        // Clamped: a week anchor set yesterday is a day off today's grid, so one step forward
+        // after midnight would otherwise land a window six days into the future.
+        val latest = VitalPeriods.latestAnchor(st.period, System.currentTimeMillis())
+        _state.update { it.copy(anchor = minOf(VitalPeriods.step(st.period, st.anchor, 1), latest)) }
         viewModelScope.launch { refresh() }
     }
 
@@ -1232,9 +1235,12 @@ class VitalDetailViewModel(
         val anchor = st.anchor
         val (windowStart, windowEnd) = VitalPeriods.window(period, anchor)
 
-        // The previous period, immediately before this one, for the trend read.
-        val prevEnd = windowStart
+        // The previous period, for the trend read. While this period is still in progress, only
+        // the same elapsed stretch of the previous one counts: today at 08:00 against all of
+        // yesterday would read DOWN every morning (night-time HR against a full day's).
+        val now = System.currentTimeMillis()
         val prevStart = VitalPeriods.step(period, anchor, -1)
+        val prevEnd = if (now < windowEnd) minOf(windowStart, prevStart + (now - windowStart)) else windowStart
 
         val dao = db.measurementDao()
         // Profile-aware zones for the REFERENCE ZONES card (iOS legend) — HRV gets its
@@ -1334,8 +1340,14 @@ class VitalDetailViewModel(
 
             // HRV zones are baseline-relative; the detail window (Week/Month) carries enough
             // history to establish one (iOS `baselineForChart`).
+            // A calendar Day holds only the hours since midnight, too few early on, so Day keeps the
+            // last 24 h it used to show (issue #102 review).
+            val baselineSamples = if (metric == "hrv" && period == Period.DAY) {
+                val end = minOf(now, windowEnd)
+                dao.range(kindName, end - 86_400_000L, end)
+            } else samples
             val baseline = if (metric == "hrv")
-                com.pulseloop.service.BaselineStats.compute(samples.map { VitalSample(it.timestamp, it.value) })
+                com.pulseloop.service.BaselineStats.compute(baselineSamples.map { VitalSample(it.timestamp, it.value) })
             else null
             val engineZones = engineKind(metric)?.let { k ->
                 com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)

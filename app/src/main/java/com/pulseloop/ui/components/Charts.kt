@@ -215,7 +215,8 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
     val ticks = mutableListOf<Long>()
     var t = dayStart
     while (t < visStart) t += stepMs
-    while (t <= visEnd) { ticks.add(t); t += stepMs }
+    // End-exclusive: a calendar day's domain ends on the next midnight, which would label "12 AM" twice.
+    while (t < visEnd) { ticks.add(t); t += stepMs }
     val formatter: (Long) -> String = { ms -> Instant.ofEpochMilli(ms).atZone(zone).format(fmt) }
     return ticks to formatter
 }
