@@ -65,6 +65,20 @@ object CRPDecoder {
     /** Hour the ring's sleep day turns over to the coming night (vendor `f4/e.h`: `20 <= HOUR_OF_DAY`).
      *  Not [com.pulseloop.util.TimeUtil.wakingDayLocal]'s 19:00, which is iOS's persistence key. */
     private const val SLEEP_DAY_ROLLOVER_HOUR = 20
+
+    /** How close to [SLEEP_DAY_ROLLOVER_HOUR] a sleep query is too close (see [nearSleepDayRollover]). */
+    private const val ROLLOVER_GUARD_MINUTES = 5
+
+    /**
+     * Whether [now] is within [ROLLOVER_GUARD_MINUTES] of the 20:00 sleep-day turnover. A reply asked
+     * for just before it and decoded just after (or a ring clock a minute off the phone's) would be
+     * dated against the wrong day; [CRPSyncEngine] skips sleep queries in this window.
+     */
+    fun nearSleepDayRollover(now: Instant, zone: ZoneId = ZoneId.systemDefault()): Boolean {
+        val local = now.atZone(zone)
+        val minute = local.hour * 60 + local.minute
+        return kotlin.math.abs(minute - SLEEP_DAY_ROLLOVER_HOUR * 60) < ROLLOVER_GUARD_MINUTES
+    }
     /** NUL — the padding byte some firmwares pad the firmware string with; trimmed, but a control
      *  byte still present after trimming rejects the payload. */
     private const val NUL = '\u0000'

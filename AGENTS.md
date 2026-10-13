@@ -465,6 +465,19 @@ block starts would sit waiting to suppress genuine sleep. On the reporter's data
 the 37 stray blocks, and every night came back to what an earlier snapshot, taken before the next
 evening's sync, had stored.
 
+**The repair runs only when the paired ring is a CRP ring, and tries 23/25 h only across a real DST
+change** (review of #110). Stored sleep doesn't say which ring wrote it, and the "fits inside the next
+day's record" match isn't unique to copies: a Jring stores every 15-minute `0x11` packet as its own
+record, so an all-LIGHT quarter hour at 02:15 on Monday fits inside Tuesday's 02:15 one and would be
+deleted, once, with no undo. Until a ring is paired the repair waits rather than marking itself done.
+
+**No sleep query goes out within 5 minutes of 20:00** (`CRPDecoder.nearSleepDayRollover`). The ring
+dates a reply by its own clock and the decoder by the phone's when the reply lands; straddling the
+turnover they disagree by a day and recreate the copy, after the repair has already run.
+
+Not covered: a copy older than the ring's ~week of history whose source night was itself overwritten
+by the next evening's sync no longer fits inside it, so the all-or-nothing match leaves it in place.
+
 ## Spot measurements: the ring's own verdict beats our window (issue #59)
 
 **Read this before touching `HRSampleWindow`, `SpotMeasurementGate`, or `RingSyncCoordinator`'s
