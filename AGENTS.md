@@ -455,21 +455,18 @@ minus 24 h. Sunday read 382 minutes asleep against a real 302, because 80 came f
 On the ring's first night there was no earlier night to land on, so the copy stood alone as a whole
 night on a day before the ring arrived.
 
-The decoder fix stops new copies. `SleepDayEarlyCopies` removes the stored ones once, at app start
-(`DataRepairs.repairDayEarlySleepCopiesIfNeeded`). A copy keeps its source record's `recordStartAt`
-minus one calendar day — 24 h, or 23/25 h across DST, since the decoder anchors on local midnight — so
-a record is a copy when the record one day later contains **every** one of its blocks, stage for
-stage. All or nothing per record: two real nights that merely start at the same minute differ in their
-stages. The repair writes **no tombstones**. The copies can't recur, and a tombstone keyed on those
-block starts would sit waiting to suppress genuine sleep. On the reporter's database it removed exactly
-the 37 stray blocks, and every night came back to what an earlier snapshot, taken before the next
-evening's sync, had stored.
+The decoder fix stops new copies. **Copies already stored are left alone, on purpose.** A one-time
+cleanup (`SleepDayEarlyCopies`, #110, CRP-only after #119) was tried and backed out before any stable
+release, after the reporter ran it on a longer-history database (#109, 2026-10-13):
+- **It removed copies but could not restore what they had overwritten.** By the time a night's
+  copy is old, the next evening's sync has usually replaced that night's real stages with the copy,
+  so deleting the copy left Sep 27 empty and cut Sep 29 from 425 to 79 asleep minutes.
+- **It ran once, before a later re-sync exposed more copies.** A copy on Oct 9 only became
+  detectable after a sync restored Oct 10, after the cleanup had marked itself done.
 
-**The repair runs only when the paired ring is a CRP ring, and tries 23/25 h only across a real DST
-change** (review of #110). Stored sleep doesn't say which ring wrote it, and the "fits inside the next
-day's record" match isn't unique to copies: a Jring stores every 15-minute `0x11` packet as its own
-record, so an all-LIGHT quarter hour at 02:15 on Monday fits inside Tuesday's 02:15 one and would be
-deleted, once, with no undo. Until a ring is paired the repair waits rather than marking itself done.
+Recovering that history needs a trusted earlier snapshot, which the app doesn't have. Don't
+reintroduce a destructive cleanup without one. Test builds 2.10.3 (68–72) and 2.10.2 (73) did run
+it, so their testers' databases may already show those holes.
 
 **No sleep query goes out within 5 minutes of 20:00** (`CRPDecoder.nearSleepDayRollover`). The ring
 dates a reply by its own clock and the decoder by the phone's when the reply lands; straddling the
