@@ -58,31 +58,36 @@ class SleepGapsTest {
         assertEquals(2, awakeMinutes(blocks))
     }
 
-    /** The ring's one-minute reopen (issue #63), stored 29 s early, is still just a seam. */
+    /**
+     * The reporter's Sep 20 get-up: one record ended 04:33:09 and the next opened 04:34:01, 52 s
+     * later. Gaps that short used to be dropped as the #63 "reopen seam"; the reporter's 19 logged
+     * gaps showed no reopen without waking, and this one was a get-up written down at the time.
+     */
     @Test
-    fun `the one-minute seam stays out even when the stored end is rounded down`() {
-        val firstStart = at(0, 30, 29)
-        val trueEnd = at(5, 57, 58)                                         // stored end: 05:57:29
-        val secondStart = trueEnd + 60_000L
+    fun `a 52 s get-up between records counts one awake minute`() {
+        val firstStart = at(0, 30, 9)
+        val secondStart = at(4, 34, 1)
         val blocks = listOf(
-            block(firstStart, 327, firstStart, firstStart),
+            block(firstStart, 243, firstStart, firstStart),                 // ends 04:33:09
             block(secondStart, 60, secondStart, firstStart),
         )
         val runs = sleepRecordRuns(blocks)
-        assertEquals(0, betweenRecordAwakeMinutes(runs[0], runs[1]))
+        assertEquals(1, betweenRecordAwakeMinutes(runs[0], runs[1]))
+        assertEquals(1, awakeMinutes(blocks))
     }
 
-    /** The worst case: stored a full 30 s early, the seam measures 90 s — a tie, rounded down. */
+    /** Records that touch exactly, as a Jring's 15-minute packets do, have no waking between them. */
     @Test
-    fun `a seam measured at exactly 90 s is still not a waking`() {
-        val firstStart = at(0, 30, 30)
-        val secondStart = firstStart + 327 * 60_000L + 90_000L
+    fun `back-to-back records count no awake time`() {
+        val firstStart = at(2, 0)
+        val secondStart = at(2, 15)
         val blocks = listOf(
-            block(firstStart, 327, firstStart, firstStart),
-            block(secondStart, 60, secondStart, firstStart),
+            block(firstStart, 15, firstStart, firstStart),
+            block(secondStart, 15, secondStart, firstStart),
         )
         val runs = sleepRecordRuns(blocks)
         assertEquals(0, betweenRecordAwakeMinutes(runs[0], runs[1]))
+        assertEquals(0, awakeMinutes(blocks))
     }
 
     // ── #111 point 1: the hypnogram draws the counted gap ────────────────────
@@ -106,14 +111,26 @@ class SleepGapsTest {
     }
 
     @Test
-    fun `the hypnogram draws nothing over a seam`() {
+    fun `the hypnogram draws nothing between back-to-back records`() {
+        val firstStart = at(0, 0)
+        val secondStart = at(1, 0)
+        val blocks = listOf(
+            block(firstStart, 60, firstStart, firstStart),
+            block(secondStart, 30, secondStart, firstStart),
+        )
+        assertEquals(blocks, hypnogramBlocks(blocks))
+    }
+
+    @Test
+    fun `the hypnogram draws a one-minute gap`() {
         val firstStart = at(0, 0)
         val secondStart = at(1, 1)
         val blocks = listOf(
             block(firstStart, 60, firstStart, firstStart),
             block(secondStart, 30, secondStart, firstStart),
         )
-        assertEquals(blocks, hypnogramBlocks(blocks))
+        val gap = hypnogramBlocks(blocks) - blocks.toSet()
+        assertEquals(1, gap.single().durationMinutes)
     }
 
     // ── #105: a gap inside the Bedtime window keeps the night whole ──────────

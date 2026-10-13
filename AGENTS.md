@@ -935,9 +935,14 @@ things to preserve:
   of real time between a record's segments, and between them and the record's own bounds. The ring
   leaves a one-second hole between segments, and rounding each end to the minute grid independently
   could still leave a whole AWAKE minute in it (315.48 → 315, 315.5 → 316).
-- **The gap between two records is rounded, ties down** (`betweenRecordAwakeMinutes`). A stored
-  record end is its start plus whole minutes, so ±30 s from the ring's. Truncation lost a real 2m07
-  waking; a tie rounding up would count the ring's 60 s reopen seam (measured as 90 s) as 2 minutes.
+- **Every gap between two records is a waking, at least one minute** (`betweenRecordAwakeMinutes`).
+  The old rule dropped gaps under 2 minutes as the #63 "reopen seam". The #111 reporter checked all
+  19 gaps on their YCBT ring since late August: the shortest were 52, 79 and 88 s, the 52 and 88 s
+  ones were get-ups they had logged, and none was a reopen without waking. The ring starts a record
+  on a whole minute, so a short gap's length depends on where the last one ended; no threshold
+  separates seams from get-ups. The gap is rounded, not truncated (a stored end is its start plus
+  whole minutes, ±30 s from the ring's; truncation lost a 2m07 waking). Back-to-back records (gap 0,
+  e.g. Jring's 15-minute packets) count nothing.
 - **The hypnogram draws the counted gaps** (`hypnogramBlocks`), display-only. Never feed those
   blocks to `awakeMinutes`, which counts the gaps itself.
 - **An hour-plus gap inside the wearer's Bedtime window stays one night** (`SleepGapBridge`). Off

@@ -151,10 +151,7 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
  * the same night can read 4m awake on one card and 0m on the other (five wakings, four caught by
  * reopening, one staged).
  *
- * The one-minute seam stays excluded: this ring closes one record and opens the next a single
- * minute later (issue #63), which is the same width as the minute-grid rounding seam *within* one
- * record — counting those grows a spurious minute on every unsplit night. Two minutes is the same
- * real-boundary threshold [sleepRecordRuns] draws its line at.
+ * Every gap counts, however short: see [betweenRecordAwakeMinutes].
  */
 fun awakeMinutes(blocks: List<SleepStageBlockEntity>): Int {
     val staged = blocks
@@ -168,24 +165,28 @@ fun awakeMinutes(blocks: List<SleepStageBlockEntity>): Int {
 }
 
 /**
- * The waking between two consecutive ring records of one session, in minutes — 0 for the one-minute
- * seam (issue #63). The one rule the Awake figure ([awakeMinutes]), the RECORDS card's
- * "Awake Xm between" line and the hypnogram ([hypnogramBlocks]) read, so they cannot disagree
- * about the same gap (issue #81).
+ * The waking between two consecutive ring records of one session, in minutes. The one rule the
+ * Awake figure ([awakeMinutes]), the RECORDS card's "Awake Xm between" line and the hypnogram
+ * ([hypnogramBlocks]) read, so they cannot disagree about the same gap (issue #81).
  *
- * **Rounded, not truncated (issue #111).** A record's stored end is its start plus a whole number
- * of minutes, so it sits up to 30 s either side of where the ring ended it. Truncating that gap
- * turned a real 2m07 waking (ended 07:08:53, stored 07:09:14, next record 07:11:00 → 1m46) into 1
- * and dropped it under the threshold. Rounding keeps the seam out: the ring reopens a record 60 s
- * after closing one, which the same ±30 s can bring to at most 90 s — so a tie rounds *down*, and
- * that is still 1 minute.
+ * **Any gap is a waking, and counts at least one minute (issue #111).** This used to drop gaps
+ * under two minutes as the "one-minute reopen seam" of issue #63. The reporter then checked all 19
+ * between-record gaps on their ring since late August: the shortest were 52 s, 79 s and 88 s, the
+ * 52 s and 88 s ones were get-ups they had written down at the time, and none was a reopen without
+ * waking. The ring opens a new record on a whole minute, so how short a gap looks depends on where
+ * in the minute the last one ended; no threshold separates a seam from a short get-up.
+ *
+ * Rounded, not truncated: a record's stored end is its start plus whole minutes, up to 30 s either
+ * side of the ring's own end, so a 2m07 waking can be stored as 1m46. Back-to-back records (gap 0,
+ * as a Jring's 15-minute packets are) stay 0.
  *
  * No upper cap is needed: a session only holds a gap of [SleepSegmentation.SESSION_GAP_MINUTES] or
  * more when the wearer's own Bedtime window spans it (issue #105), and then it is a waking too.
  */
 fun betweenRecordAwakeMinutes(earlier: SleepRecordRun, later: SleepRecordRun): Int {
-    val gapMinutes = Math.floorDiv(later.startAt - earlier.endAt + 29_999L, 60_000L).toInt()
-    return if (gapMinutes >= 2) gapMinutes else 0
+    val gapMs = later.startAt - earlier.endAt
+    if (gapMs <= 0L) return 0
+    return Math.floorDiv(gapMs + 29_999L, 60_000L).toInt().coerceAtLeast(1)
 }
 
 /**
