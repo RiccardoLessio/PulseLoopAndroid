@@ -202,7 +202,11 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
  * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
  * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(
+    private val db: PulseLoopDatabase,
+    /** The night-bridging rule a record delete/edit re-segments with — the sync's own (issue #105). */
+    private val gapBridge: () -> com.pulseloop.service.SleepGapBridge = { com.pulseloop.service.SleepGapBridge.NONE },
+) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
@@ -387,7 +391,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
      */
     suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
         try {
-            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt)
+            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt, gapBridge())
             if (removed) rebuild(_state.value.range)
             removed
         } catch (_: Exception) { false }
@@ -402,7 +406,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         newEndAt: Long,
     ): Boolean =
         try {
-            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt)
+            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt, gapBridge())
             if (updated) rebuild(_state.value.range)
             updated
         } catch (_: Exception) { false }

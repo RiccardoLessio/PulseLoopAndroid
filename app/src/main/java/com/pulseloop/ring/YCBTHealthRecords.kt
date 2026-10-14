@@ -10,6 +10,8 @@ import java.time.Instant
 object YCBTHealthRecords {
     private const val TEMPERATURE_FILLER: Int = 15
     private const val MAX_SLEEP_SESSION_MINUTES = 24 * 60
+    /** A hole between a record's segments shorter than this is a seam, not a waking (issue #111). */
+    private const val SEAM_SECONDS = 60L
 
     fun decode(buffer: ByteArray, type: YCBTHistoryType): List<RingDecodedEvent> {
         return when (type) {
@@ -248,8 +250,9 @@ object YCBTHealthRecords {
      * that way.
      *
      * So each segment is placed at its own `sleepStartTime` for its own `sleepLen`, and the run
-     * spans exactly the header's `startTime`..`endTime`. The one-second gaps round away against
-     * the minute grid; a gap the ring really left reads as wake, which is what it is.
+     * spans exactly the header's `startTime`..`endTime`. The one-second gaps are closed rather than
+     * left to the minute grid, which doesn't always round them away (issue #111); a gap the ring
+     * really left, a minute or more, reads as wake, which is what it is.
      *
      * A record with unusable header bounds (a synthetic or truncated one) keeps the old
      * concatenation, since there is nothing better to place against.
@@ -275,11 +278,23 @@ object YCBTHealthRecords {
         // AWAKE is the honest filler: the ring reports wake as its own segment type (0xf4), so a
         // minute no segment claims is one the ring did not call sleep.
         val timeline = MutableList(total) { SleepStage.AWAKE }
-        for (segment in segments) {
-            val from = kotlin.math.round((segment.startSeconds - headerStart) / 60.0).toInt()
-            val until = kotlin.math.round(
-                (segment.startSeconds.toLong() + segment.seconds - headerStart) / 60.0
-            ).toInt()
+        // A hole shorter than a minute of real time is the ring's one-second seam between
+        // segments, not a waking (issue #111). Left open, it can still claim a whole minute: a
+        // segment ending at minute 315.48 rounds to 315 and the next, starting at 315.5, rounds to
+        // 316, so minute 315 keeps the AWAKE filler. So each segment runs on to the next one's
+        // start — and the first from the record's start, the last to its end — across any such hole.
+        val ordered = segments.sortedBy { it.startSeconds }
+        for ((index, segment) in ordered.withIndex()) {
+            var start = segment.startSeconds.toLong()
+            if (index == 0 && start - headerStart in 0 until SEAM_SECONDS) start = headerStart.toLong()
+            var end = segment.startSeconds.toLong() + segment.seconds
+            // The next segment to start at or after this one's end: a segment nested inside this
+            // one must not hide the seam to the one that really follows it.
+            val next = ordered.firstOrNull { it.startSeconds.toLong() >= end }?.startSeconds?.toLong()
+                ?: headerEnd.toLong()
+            if (next - end in 0 until SEAM_SECONDS) end = next
+            val from = kotlin.math.round((start - headerStart) / 60.0).toInt()
+            val until = kotlin.math.round((end - headerStart) / 60.0).toInt()
             for (minute in maxOf(0, from) until minOf(total, until)) timeline[minute] = segment.stage
         }
         return timeline

@@ -692,7 +692,7 @@ class EventPersistenceSubscriber(
         existing: List<SleepSessionEntity>,
         dayBlocks: List<SleepStageBlockEntity>,
     ) = db.withTransaction {
-        val groups = SleepSegmentation.segment(dayBlocks)
+        val groups = SleepSegmentation.segment(dayBlocks, SleepGapBridge.fromSettings(context))
 
         // No blocks left on this day — drop the empty rows entirely (their blocks cascade).
         if (groups.isEmpty()) {

@@ -455,21 +455,18 @@ minus 24 h. Sunday read 382 minutes asleep against a real 302, because 80 came f
 On the ring's first night there was no earlier night to land on, so the copy stood alone as a whole
 night on a day before the ring arrived.
 
-The decoder fix stops new copies. `SleepDayEarlyCopies` removes the stored ones once, at app start
-(`DataRepairs.repairDayEarlySleepCopiesIfNeeded`). A copy keeps its source record's `recordStartAt`
-minus one calendar day — 24 h, or 23/25 h across DST, since the decoder anchors on local midnight — so
-a record is a copy when the record one day later contains **every** one of its blocks, stage for
-stage. All or nothing per record: two real nights that merely start at the same minute differ in their
-stages. The repair writes **no tombstones**. The copies can't recur, and a tombstone keyed on those
-block starts would sit waiting to suppress genuine sleep. On the reporter's database it removed exactly
-the 37 stray blocks, and every night came back to what an earlier snapshot, taken before the next
-evening's sync, had stored.
+The decoder fix stops new copies. **Copies already stored are left alone, on purpose.** A one-time
+cleanup (`SleepDayEarlyCopies`, #110, CRP-only after #119) was tried and backed out before any stable
+release, after the reporter ran it on a longer-history database (#109, 2026-10-13):
+- **It removed copies but could not restore what they had overwritten.** By the time a night's
+  copy is old, the next evening's sync has usually replaced that night's real stages with the copy,
+  so deleting the copy left Sep 27 empty and cut Sep 29 from 425 to 79 asleep minutes.
+- **It ran once, before a later re-sync exposed more copies.** A copy on Oct 9 only became
+  detectable after a sync restored Oct 10, after the cleanup had marked itself done.
 
-**The repair runs only when the paired ring is a CRP ring, and tries 23/25 h only across a real DST
-change** (review of #110). Stored sleep doesn't say which ring wrote it, and the "fits inside the next
-day's record" match isn't unique to copies: a Jring stores every 15-minute `0x11` packet as its own
-record, so an all-LIGHT quarter hour at 02:15 on Monday fits inside Tuesday's 02:15 one and would be
-deleted, once, with no undo. Until a ring is paired the repair waits rather than marking itself done.
+Recovering that history needs a trusted earlier snapshot, which the app doesn't have. Don't
+reintroduce a destructive cleanup without one. Test builds 2.10.3 (68–72) and 2.10.2 (73) did run
+it, so their testers' databases may already show those holes.
 
 **No sleep query goes out within 5 minutes of 20:00** (`CRPDecoder.nearSleepDayRollover`). The ring
 dates a reply by its own clock and the decoder by the phone's when the reply lands; straddling the
@@ -931,6 +928,27 @@ things to preserve:
 - **Verbose transport logging is a driver opt-in** (`WearableDriver.verboseTransportDiagnostics`,
   on for CRP only), and its log lines carry the frame's route (`diagnosticRoute`) — never its payload.
   An undecoded frame is still logged `unknown` and exported whole, per the section above.
+
+## A gap is a waking only if it is real time, and the Bedtime window outranks the hour rule (issues #111, #105)
+
+- **Sub-minute holes are seams.** `YCBTHealthRecords.placeStages` closes any hole shorter than 60 s
+  of real time between a record's segments, and between them and the record's own bounds. The ring
+  leaves a one-second hole between segments, and rounding each end to the minute grid independently
+  could still leave a whole AWAKE minute in it (315.48 → 315, 315.5 → 316).
+- **Every gap between two records is a waking, at least one minute** (`betweenRecordAwakeMinutes`).
+  The old rule dropped gaps under 2 minutes as the #63 "reopen seam". The #111 reporter checked all
+  19 gaps on their YCBT ring since late August: the shortest were 52, 79 and 88 s, the 52 and 88 s
+  ones were get-ups they had logged, and none was a reopen without waking. The ring starts a record
+  on a whole minute, so a short gap's length depends on where the last one ended; no threshold
+  separates seams from get-ups. The gap is rounded, not truncated (a stored end is its start plus
+  whole minutes, ±30 s from the ring's; truncation lost a 2m07 waking). Back-to-back records (gap 0,
+  e.g. Jring's 15-minute packets) count nothing.
+- **The hypnogram draws the counted gaps** (`hypnogramBlocks`), display-only. Never feed those
+  blocks to `awakeMinutes`, which counts the gaps itself.
+- **An hour-plus gap inside the wearer's Bedtime window stays one night** (`SleepGapBridge`). Off
+  unless quiet hours are on; Bedtime windows decide when the night has any, else the clock window.
+  The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
+  record delete would split a night the next sync merges back.
 
 ## Long-lived services belong to the process, not the composition (issue #113)
 

@@ -159,7 +159,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.sessionPageItems(
     item { SessionHero(session, blocks) }
     item {
         VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-            SleepHypnogram(blocks = blocks, spanMin = session.spanMinutes, startTs = session.startAt)
+            SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = session.spanMinutes, startTs = session.startAt)
         }
     }
     // The individual ring records behind the merged night (issue #68). Only when there is more
@@ -223,7 +223,7 @@ private fun SleepCarousel(
                 )
                 SessionHero(s, blocks)
                 VisualizationCard(eyebrow = "Stages", title = "Sleep architecture", legend = true) {
-                    SleepHypnogram(blocks = blocks, spanMin = s.spanMinutes, startTs = s.startAt)
+                    SleepHypnogram(blocks = remember(blocks) { com.pulseloop.service.hypnogramBlocks(blocks) }, spanMin = s.spanMinutes, startTs = s.startAt)
                 }
                 // Unlike the single-session page, shown even for a one-record session: on a
                 // multi-session day a phantom (the sofa evening the merge did not join to the
@@ -1130,6 +1130,9 @@ private fun SleepRecordEditDialog(
     var currentStart by remember { mutableStateOf(run.startAt) }
     var currentEnd by remember { mutableStateOf(run.endAt) }
     var pickingTime by remember { mutableStateOf<String?>(null) } // "start" or "end"
+    // Set when the last picked time fell outside the record and was pulled back to its edge, which
+    // otherwise looks like the edit didn't register (issue #106).
+    var pickedOutside by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1157,6 +1160,14 @@ private fun SleepRecordEditDialog(
                     ) {
                         Text("End: ${SleepFormat.clockTime(currentEnd)}")
                     }
+                }
+                if (pickedOutside) {
+                    Text(
+                        "This record runs ${SleepFormat.clockTime(run.startAt)} – " +
+                            "${SleepFormat.clockTime(run.endAt)}. You can only shorten it.",
+                        color = PulseColors.danger,
+                        fontSize = 12.sp,
+                    )
                 }
                 if (currentStart >= currentEnd) {
                     Text(
@@ -1195,8 +1206,9 @@ private fun SleepRecordEditDialog(
             text = { TimePicker(state = timeState) },
             confirmButton = {
                 TextButton(onClick = {
-                    val resolved = resolveAdjustedTime(targetTs, run.startAt, run.endAt, timeState.hour, timeState.minute, zone)
-                        .coerceIn(run.startAt, run.endAt)
+                    val picked = resolveAdjustedTime(targetTs, run.startAt, run.endAt, timeState.hour, timeState.minute, zone)
+                    val resolved = picked.coerceIn(run.startAt, run.endAt)
+                    pickedOutside = isOutsideRecord(picked, run.startAt, run.endAt)
                     if (which == "start") {
                         currentStart = resolved
                     } else {
@@ -1211,6 +1223,14 @@ private fun SleepRecordEditDialog(
         )
     }
 }
+
+/**
+ * Whether a time picked in the edit dialog falls outside the record, by more than the seconds the
+ * picker can't show: the record's own start and end carry seconds, so picking the minute shown on
+ * the button must not count as outside (issue #106).
+ */
+internal fun isOutsideRecord(picked: Long, recordStart: Long, recordEnd: Long): Boolean =
+    picked < recordStart - recordStart % 60_000L || picked >= recordEnd - recordEnd % 60_000L + 60_000L
 
 /**
  * Resolves the epoch millis for an adjusted time within/near a sleep record [recordStart]..[recordEnd].

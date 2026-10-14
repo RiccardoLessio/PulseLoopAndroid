@@ -45,14 +45,14 @@ class AwakeMinutesTest {
     }
 
     @Test
-    fun `a one-minute record seam is not awake time`() {
-        // Same record re-opened a minute later (the #63 firmware behavior): two runs, 1 min gap.
+    fun `a one-minute gap between records is awake time`() {
+        // The ring closes a record when the wearer gets up, however briefly (issue #111).
         val blocks = listOf(
             block(0, 60, SleepStage.LIGHT, recordStartMinute = 0),
             block(61, 60, SleepStage.LIGHT, recordStartMinute = 61),
         )
 
-        assertEquals(0, awakeMinutes(blocks))
+        assertEquals(1, awakeMinutes(blocks))
     }
 
     @Test
