@@ -949,3 +949,24 @@ things to preserve:
   unless quiet hours are on; Bedtime windows decide when the night has any, else the clock window.
   The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
   record delete would split a night the next sync merges back.
+
+## Long-lived services belong to the process, not the composition (issue #113)
+
+**`RingBLEClient`, `RingSyncCoordinator`, `EventPersistenceSubscriber` and the other app-lifetime
+services live in `AppServices`, one set per process. Never `remember { … }` one in a composable.**
+
+`MainActivity` declares no `android:configChanges`, so the Activity — and `PulseLoopApp`'s whole
+composition with it — is rebuilt on any configuration change: a dark-theme switch (Pixel's Bedtime
+mode does one overnight), locale, font scale, rotation. When these were `remember`ed there, every
+rebuild made a second `RingBLEClient`. The first was never destroyed and kept both the ring's GATT
+link and `processConnectionOwner`, so the new one could only log "Connection skipped: another
+PulseLoop BLE client owns GATT" every second and show Disconnected over a ring that was still
+connected. That matches #113's log (Ale-Hop YCBT ring, process up five days), though the
+recreation itself wasn't captured. Each rebuild also put another persistence subscriber and sync
+coordinator on the event bus, so every frame was persisted and handled twice.
+
+- `AppServices.get(context)` builds the set from the application context, so none of it pins an Activity.
+- The one-shot startup in `PulseLoopApp` (callback wiring, `start()`s, the stale-state reset, the
+  auto-reconnect) runs for the process's first composition only (`claimStartup()`). Re-running the
+  stale-state reset would write DISCONNECTED over a live link.
+- A recreated Activity's first `ON_START` is not the startup's, so it does run `reconnectIfNeeded()`.
