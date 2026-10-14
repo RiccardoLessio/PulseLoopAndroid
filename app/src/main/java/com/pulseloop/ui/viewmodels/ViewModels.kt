@@ -202,7 +202,11 @@ class TodayViewModel(db: PulseLoopDatabase, private val apiKeyStore: ApiKeyStore
  * Day view anchors on the *reference night* (before 4 AM local = yesterday's night);
  * Week/Month/Year anchor on the last recorded session so history still surfaces.
  */
-class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
+class SleepViewModel(
+    private val db: PulseLoopDatabase,
+    /** The night-bridging rule a record delete/edit re-segments with — the sync's own (issue #105). */
+    private val gapBridge: () -> com.pulseloop.service.SleepGapBridge = { com.pulseloop.service.SleepGapBridge.NONE },
+) : ViewModel() {
     data class SleepState(
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
@@ -387,7 +391,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
      */
     suspend fun deleteSleepRecord(sessionId: String, recordStartAt: Long): Boolean =
         try {
-            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt)
+            val removed = com.pulseloop.data.SleepRecordDeletion.delete(db, sessionId, recordStartAt, gapBridge())
             if (removed) rebuild(_state.value.range)
             removed
         } catch (_: Exception) { false }
@@ -402,7 +406,7 @@ class SleepViewModel(private val db: PulseLoopDatabase) : ViewModel() {
         newEndAt: Long,
     ): Boolean =
         try {
-            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt)
+            val updated = com.pulseloop.data.SleepRecordDeletion.edit(db, sessionId, recordStartAt, newStartAt, newEndAt, gapBridge())
             if (updated) rebuild(_state.value.range)
             updated
         } catch (_: Exception) { false }
@@ -444,6 +448,13 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         val shownDay: Long = 0,
         /** The shown day's totals (the summary card); `today` stays live for the week widget. */
         val daySummary: ActivityDailyEntity? = null,
+        /** The shown day's calories as the Today screen shows them (issue #101): the ring's own
+         *  figure when it reported one, else BMR accrued plus the active estimate. The row's raw
+         *  `calories` stays 0 for rings that report none, which is why this exists. */
+        val dayCalories: Double? = null,
+        /** The active-energy part of [dayCalories] — what the calorie goal ring measures, since the
+         *  calorie goal is an active-energy goal ([DailyCalorieEstimator.effectiveActiveCalories]). */
+        val dayActiveCalories: Double? = null,
         val stepGoal: Int = UserGoalEntity.DEFAULT_STEPS,
         val activeMinutesGoal: Int = 45,
         val distanceGoalMeters: Double = UserGoalEntity.DEFAULT_DISTANCE_METERS,
@@ -482,7 +493,15 @@ class ActivityViewModel(db: PulseLoopDatabase) : ViewModel() {
         }
         viewModelScope.launch {
             shownDayStart.flatMapLatest { day -> db.activityDailyDao().byDayFlow(day) }.collect { day ->
-                _state.update { it.copy(daySummary = day) }
+                val profile = db.userProfileDao().get()?.let {
+                    DailyCalorieEstimator.Profile(it.sex, it.age, it.weightKg, it.heightCm)
+                }
+                val calories = day?.let { row ->
+                    profile?.let { DailyCalorieEstimator.effectiveCalories(row, it) }
+                        ?: DailyCalorieEstimator.deviceReportedCalories(row)
+                }
+                val activeCalories = day?.let { DailyCalorieEstimator.effectiveActiveCalories(it) }
+                _state.update { it.copy(daySummary = day, dayCalories = calories, dayActiveCalories = activeCalories) }
             }
         }
         viewModelScope.launch {
@@ -1070,9 +1089,12 @@ class VitalDetailViewModel(
 
     data class DetailState(
         val period: Period = Period.DAY,
-        // For DAY the anchor is the *end* of a rolling 24-hour window (defaults to now);
-        // for WEEK/MONTH it is the start of the period.
-        val anchor: Long = System.currentTimeMillis(),
+        /** The shown window's start: local midnight, the week's first day, or the 1st (issue #102). */
+        val anchor: Long = VitalPeriods.latestAnchor(Period.DAY, System.currentTimeMillis()),
+        /** The shown calendar window `[windowStart, windowEnd)` — the chart's x domain, so it spans
+         *  the whole period with gaps where the ring wasn't worn rather than first-to-last reading. */
+        val windowStart: Long = 0L,
+        val windowEnd: Long = 0L,
         val points: List<Double> = emptyList(),
         val secondary: List<Double> = emptyList(),
         val labels: List<String> = emptyList(),
@@ -1185,105 +1207,44 @@ class VitalDetailViewModel(
     }
 
     fun setPeriod(p: Period) {
-        // refresh() treats the WEEK/MONTH anchor as the window START, so the anchor
-        // must be the start of the current period — the trailing 7 days for WEEK,
-        // the first of the month for MONTH. Anchoring at today would aim the window
-        // at the future and leave only today's samples in range.
-        val todayStart = TimeUtil.startOfDayLocal(System.currentTimeMillis())
-        val anchor = when (p) {
-            Period.DAY   -> System.currentTimeMillis()   // rolling last 24h, ending now
-            Period.WEEK  -> todayStart - 6 * 86_400_000L
-            Period.MONTH -> Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                .withDayOfMonth(1).toInstant().toEpochMilli()
-        }
-        _state.update { it.copy(period = p, anchor = anchor) }
+        _state.update { it.copy(period = p, anchor = VitalPeriods.latestAnchor(p, System.currentTimeMillis())) }
         viewModelScope.launch { refresh() }
     }
 
     fun prev() {
         val st = _state.value
-        val newAnchor = when (st.period) {
-            Period.DAY   -> st.anchor - 86_400_000L
-            Period.WEEK  -> st.anchor - 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(st.anchor).atZone(ZoneId.systemDefault())
-                i.minusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-        _state.update { it.copy(anchor = newAnchor) }
+        _state.update { it.copy(anchor = VitalPeriods.step(st.period, st.anchor, -1)) }
         viewModelScope.launch { refresh() }
     }
 
     fun next() {
+        if (!canGoForward()) return
         val st = _state.value
-        val newAnchor = when (st.period) {
-            Period.DAY   -> st.anchor + 86_400_000L
-            Period.WEEK  -> st.anchor + 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(st.anchor).atZone(ZoneId.systemDefault())
-                i.plusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-        val todayStart = TimeUtil.startOfTodayLocal()
-        val maxAnchor = when (st.period) {
-            Period.DAY -> System.currentTimeMillis()  // rolling: end can reach now
-            Period.WEEK -> todayStart - 6 * 86_400_000L  // latest window start (trailing 7 days)
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
-        }
-        if (newAnchor > maxAnchor) return
-        _state.update { it.copy(anchor = newAnchor) }
+        // Clamped: a week anchor set yesterday is a day off today's grid, so one step forward
+        // after midnight would otherwise land a window six days into the future.
+        val latest = VitalPeriods.latestAnchor(st.period, System.currentTimeMillis())
+        _state.update { it.copy(anchor = minOf(VitalPeriods.step(st.period, st.anchor, 1), latest)) }
         viewModelScope.launch { refresh() }
     }
 
     /** Whether forward navigation is allowed (disabled at the present/latest window). */
     fun canGoForward(): Boolean {
         val st = _state.value
-        val todayStart = TimeUtil.startOfTodayLocal()
-        return when (st.period) {
-            // Enabled only if a full 24h step still fits before now (i.e. we're paged back).
-            Period.DAY   -> st.anchor + 86_400_000L <= System.currentTimeMillis()
-            Period.WEEK  -> st.anchor < todayStart - 6 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(todayStart).atZone(ZoneId.systemDefault())
-                st.anchor < i.withDayOfMonth(1).toInstant().toEpochMilli()
-            }
-        }
+        return st.anchor < VitalPeriods.latestAnchor(st.period, System.currentTimeMillis())
     }
 
     private suspend fun refresh() {
         val st = _state.value
         val period = st.period
+        val anchor = st.anchor
+        val (windowStart, windowEnd) = VitalPeriods.window(period, anchor)
+
+        // The previous period, for the trend read. While this period is still in progress, only
+        // the same elapsed stretch of the previous one counts: today at 08:00 against all of
+        // yesterday would read DOWN every morning (night-time HR against a full day's).
         val now = System.currentTimeMillis()
-        // DAY is a rolling 24h window ending at the anchor; when we're at the latest
-        // (can't page further forward) keep the end pinned to "now" so it truly rolls.
-        val anchor = if (period == Period.DAY && st.anchor + 86_400_000L > now) now else st.anchor
-
-        val windowStart = when (period) {
-            Period.DAY   -> anchor - 86_400_000L   // rolling last 24h
-            else         -> anchor                 // WEEK/MONTH: anchor = window start
-        }
-        val windowEnd = when (period) {
-            Period.DAY   -> anchor
-            Period.WEEK  -> anchor + 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(anchor).atZone(ZoneId.systemDefault())
-                i.plusMonths(1).toInstant().toEpochMilli()
-            }
-        }
-
-        // Previous equal-length window, immediately before this one, for the trend read.
-        val prevEnd = windowStart
-        val prevStart = when (period) {
-            Period.DAY   -> windowStart - 86_400_000L
-            Period.WEEK  -> windowStart - 7 * 86_400_000L
-            Period.MONTH -> {
-                val i = Instant.ofEpochMilli(windowStart).atZone(ZoneId.systemDefault())
-                i.minusMonths(1).toInstant().toEpochMilli()
-            }
-        }
+        val prevStart = VitalPeriods.step(period, anchor, -1)
+        val prevEnd = if (now < windowEnd) minOf(windowStart, prevStart + (now - windowStart)) else windowStart
 
         val dao = db.measurementDao()
         // Profile-aware zones for the REFERENCE ZONES card (iOS legend) — HRV gets its
@@ -1325,6 +1286,7 @@ class VitalDetailViewModel(
 
             _state.update { it.copy(
                 anchor = anchor,
+                windowStart = windowStart, windowEnd = windowEnd,
                 points = points, secondary = secondary, labels = labels,
                 timestamps = times,
                 readings = bpReadings,
@@ -1382,8 +1344,14 @@ class VitalDetailViewModel(
 
             // HRV zones are baseline-relative; the detail window (Week/Month) carries enough
             // history to establish one (iOS `baselineForChart`).
+            // A calendar Day holds only the hours since midnight, too few early on, so Day keeps the
+            // last 24 h it used to show (issue #102 review).
+            val baselineSamples = if (metric == "hrv" && period == Period.DAY) {
+                val end = minOf(now, windowEnd)
+                dao.range(kindName, end - 86_400_000L, end)
+            } else samples
             val baseline = if (metric == "hrv")
-                com.pulseloop.service.BaselineStats.compute(samples.map { VitalSample(it.timestamp, it.value) })
+                com.pulseloop.service.BaselineStats.compute(baselineSamples.map { VitalSample(it.timestamp, it.value) })
             else null
             val engineZones = engineKind(metric)?.let { k ->
                 com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)
@@ -1400,6 +1368,7 @@ class VitalDetailViewModel(
 
             _state.update { it.copy(
                 anchor = anchor,
+                windowStart = windowStart, windowEnd = windowEnd,
                 points = points, secondary = emptyList(), labels = labels,
                 timestamps = times,
                 readings = readings,

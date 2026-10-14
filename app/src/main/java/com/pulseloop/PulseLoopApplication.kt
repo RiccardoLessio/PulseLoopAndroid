@@ -33,7 +33,6 @@ class PulseLoopApplication : Application() {
         // ring can't connect before this completes a couple of DELETE statements.
         appScope.launch { DataRepairs.runIfNeeded(this@PulseLoopApplication) }
         appScope.launch { DataRepairs.repairSleepDurationsIfNeeded(this@PulseLoopApplication) }
-        appScope.launch { DataRepairs.repairDayEarlySleepCopiesIfNeeded(this@PulseLoopApplication) }
         appScope.launch { DataRepairs.repairLuckRingActivityIfNeeded(this@PulseLoopApplication) }
 
         // Home-screen widgets (iOS #44): publish the snapshot on every foreground/background

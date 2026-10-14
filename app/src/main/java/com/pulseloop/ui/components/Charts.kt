@@ -215,7 +215,8 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
     val ticks = mutableListOf<Long>()
     var t = dayStart
     while (t < visStart) t += stepMs
-    while (t <= visEnd) { ticks.add(t); t += stepMs }
+    // End-exclusive: a calendar day's domain ends on the next midnight, which would label "12 AM" twice.
+    while (t < visEnd) { ticks.add(t); t += stepMs }
     val formatter: (Long) -> String = { ms -> Instant.ofEpochMilli(ms).atZone(zone).format(fmt) }
     return ticks to formatter
 }
@@ -234,6 +235,8 @@ private fun timeAxisTicks(visStart: Long, visEnd: Long, zone: ZoneId): Pair<List
  *
  * @param timestamps optional epoch-ms per point (parallel to [points]); when present the
  *   scrub tooltip shows a precise time via [tooltipTimeFormatter].
+ * @param timeDomain optional `[start, end)` epoch-ms the time axis spans, e.g. a calendar day.
+ *   Without it the axis runs from the first reading to the last (issue #102).
  * @param valueFormatter formats Y-axis + tooltip values (default: integer / 1-dp).
  */
 @Composable
@@ -251,6 +254,7 @@ fun TrendChart(
     valueFormatter: (Double) -> String = ::formatTick,
     tooltipTimeFormatter: ((Long) -> String)? = null,
     interactive: Boolean = true,
+    timeDomain: Pair<Long, Long>? = null,
 ) {
     if (points.isEmpty()) return
 
@@ -268,8 +272,9 @@ fun TrendChart(
     val useTime = timestamps.size == n && n >= 1
     val tMin = if (useTime) timestamps.min() else 0L
     val tMax = if (useTime) timestamps.max() else 0L
-    val tFullStart = if (useTime && tMax > tMin) tMin else tMin - 1_800_000L
-    val tFullEnd = if (useTime && tMax > tMin) tMax else tMax + 1_800_000L
+    val domain = timeDomain?.takeIf { useTime && it.second > it.first }
+    val tFullStart = domain?.first ?: if (useTime && tMax > tMin) tMin else tMin - 1_800_000L
+    val tFullEnd = domain?.second ?: if (useTime && tMax > tMin) tMax else tMax + 1_800_000L
     val fullRangeMs = (tFullEnd - tFullStart).coerceAtLeast(1L)
     val zone = ZoneId.systemDefault()
 

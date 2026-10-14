@@ -359,8 +359,9 @@ private fun dayHeaderLabel(dayMillis: Long): String {
 private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, units: UnitSystem) {
     val shape = RoundedCornerShape(20.dp)
     // The shown day's totals, not always-today: day navigation must move this card (issue #76).
+    // No fallback to today: a day with no stored row is a day with no data, not today's (issue #101).
     // WeeklyGoalCard keeps reading state.today — a week widget is about the live week.
-    val today = state.daySummary ?: state.today
+    val today = state.daySummary
     val distValue = today?.distanceMeters?.let { Formats.distance(UnitConverter.distance(it, units)) }
     Row(
         Modifier
@@ -377,13 +378,15 @@ private fun DailyActivitySummaryCard(state: ActivityViewModel.ActivityState, uni
                 SummaryMetric("Steps", today?.steps?.let { Formats.count(it) } ?: "—", null, PulseColors.steps, Modifier.weight(1f))
                 SummaryMetric("Distance", distValue ?: "—", if (distValue != null) UnitConverter.distanceUnit(units) else null, PulseColors.distance, Modifier.weight(1f))
             }
-            SummaryMetric("Calories", today?.calories?.let { Formats.count(it.toInt()) } ?: "—", if (today?.calories != null) "cal" else null, PulseColors.calories)
+            // The same figure the Today screen shows, not the row's raw `calories` (issue #101).
+            val calories = state.dayCalories
+            SummaryMetric("Calories", calories?.let { Formats.count(it.toInt()) } ?: "—", if (calories != null) "cal" else null, PulseColors.calories)
         }
         ActivityRings(
             rings = listOf(
                 ActivityRing(today?.steps?.toDouble(), state.stepGoal.toDouble(), PulseColors.steps),
                 ActivityRing(today?.distanceMeters, state.distanceGoalMeters, PulseColors.distance),
-                ActivityRing(today?.calories, state.caloriesGoal.toDouble(), PulseColors.calories),
+                ActivityRing(state.dayActiveCalories, state.caloriesGoal.toDouble(), PulseColors.calories),
             ),
             size = 112.dp,
             strokeWidth = 11.dp,

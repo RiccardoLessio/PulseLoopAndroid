@@ -4,6 +4,7 @@ import androidx.room.withTransaction
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.SleepStage
+import com.pulseloop.service.SleepGapBridge
 
 /**
  * Deleting one ring sleep record (issue #78) — the sleep sibling of [ActivityBucketDeletion].
@@ -46,6 +47,7 @@ object SleepRecordDeletion {
         db: PulseLoopDatabase,
         sessionId: String,
         recordStartAt: Long,
+        bridge: SleepGapBridge = SleepGapBridge.NONE,
     ): Boolean = db.withTransaction {
         val session = db.sleepSessionDao().byId(sessionId) ?: return@withTransaction false
         val blocks = db.sleepStageBlockDao().forSession(sessionId)
@@ -75,7 +77,7 @@ object SleepRecordDeletion {
         db.measurementDeletionDao().recordSleepBlocks(day, targets.map { it.startAt })
         targets.forEach { db.sleepStageBlockDao().deleteByStart(sessionId, it.startAt) }
 
-        restateSession(db, session, blocks - targets.toSet())
+        restateSession(db, session, blocks - targets.toSet(), bridge)
         true
     }
 
@@ -94,6 +96,7 @@ object SleepRecordDeletion {
         recordStartAt: Long,
         newStartAt: Long,
         newEndAt: Long,
+        bridge: SleepGapBridge = SleepGapBridge.NONE,
     ): Boolean = db.withTransaction {
         if (newStartAt >= newEndAt) return@withTransaction false
         val session = db.sleepSessionDao().byId(sessionId) ?: return@withTransaction false
@@ -141,7 +144,7 @@ object SleepRecordDeletion {
         db.measurementDeletionDao().recordSleepEdit(day, targetRecordStart, newStartAt, newEndAt)
 
         val nonTargets = blocks - targets.toSet()
-        restateSession(db, session, nonTargets + survivingTargets)
+        restateSession(db, session, nonTargets + survivingTargets, bridge)
         true
     }
 
@@ -159,13 +162,22 @@ object SleepRecordDeletion {
      * write path reads as two sessions, not one night with a long waking. Restating it as a single
      * row would both disagree with the next sync and let `awakeMinutes` count the hole as a
      * between-record waking (issue #81), turning a deleted 00:25–03:19 into three hours awake.
+     *
+     * [bridge] must be the one the sync uses ([SleepGapBridge.fromSettings]): a hole inside the
+     * wearer's Bedtime window stays one night there (issue #105), so it has to here too, or the
+     * next sync would merge back what this split.
      */
     internal suspend fun restateSession(
         db: PulseLoopDatabase,
         session: SleepSessionEntity,
         remaining: List<SleepStageBlockEntity>,
+        bridge: SleepGapBridge = SleepGapBridge.NONE,
     ) {
-        val plan = planRestate(session, remaining)
+        // A gap the night already held stays held, whatever the bridge says today: the Bedtime
+        // window that bridged it may have aged out of the 30-day log, or the settings changed, and
+        // no re-sync can re-merge a night the ring no longer has (issue #116 review).
+        val before = db.sleepStageBlockDao().forSession(session.id)
+        val plan = planRestate(session, remaining, bridge.keepingGapsOf(before))
         if (plan.isEmpty()) {
             db.sleepSessionDao().deleteById(session.id)
             return
@@ -218,8 +230,9 @@ object SleepRecordDeletion {
     internal fun planRestate(
         session: SleepSessionEntity,
         remaining: List<SleepStageBlockEntity>,
+        bridge: SleepGapBridge = SleepGapBridge.NONE,
     ): List<RestatedRow> {
-        val segments = com.pulseloop.service.SleepSegmentation.segment(remaining).map { g ->
+        val segments = com.pulseloop.service.SleepSegmentation.segment(remaining, bridge).map { g ->
             val sorted = g.sortedBy { it.startAt }
             RestatedRow(
                 id = "",

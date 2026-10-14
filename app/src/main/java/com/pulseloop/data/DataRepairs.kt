@@ -91,27 +91,6 @@ object DataRepairs {
     }
 
     /**
-     * Remove the sleep a CRP ring's evening syncs stored one day early ([SleepDayEarlyCopies]): a
-     * whole night on a day the ring wasn't worn, and the next night's start and end padding every
-     * night after it. The decoder no longer makes them, but ring history only reaches back about a
-     * week and no re-sync touches a day the ring has nothing for, so the stored copies would stay.
-     *
-     * Not tied to a ring family: the match needs a record that starts exactly one calendar day
-     * before another *and* fits inside it stage for stage, which ordinary nights don't do. One
-     * transaction, for the same reason as [repairSleepDurationsIfNeeded].
-     */
-    suspend fun repairDayEarlySleepCopiesIfNeeded(
-        context: Context,
-        db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context),
-    ) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val key = "sleepDayEarlyCopyRepair.v1"
-        if (prefs.getBoolean(key, false)) return
-        SleepDayEarlyCopies.repair(db)
-        prefs.edit().putBoolean(key, true).apply()
-    }
-
-    /**
      * Bring LuckRing/TK18 days back to the ring's own total ([LuckRingActivityRepair], issue #112):
      * its running-total pushes were summed as buckets, so a walk round the house read as miles.
      * Marked done only once a ring is paired, so a wearer who forgot the ring is repaired on re-pair.
