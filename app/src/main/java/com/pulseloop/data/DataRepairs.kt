@@ -89,4 +89,20 @@ object DataRepairs {
         }
         prefs.edit().putBoolean(key, true).apply()
     }
+
+    /**
+     * Bring LuckRing/TK18 days back to the ring's own total ([LuckRingActivityRepair], issue #112):
+     * its running-total pushes were summed as buckets, so a walk round the house read as miles.
+     * Marked done only once a ring is paired, so a wearer who forgot the ring is repaired on re-pair.
+     */
+    suspend fun repairLuckRingActivityIfNeeded(
+        context: Context,
+        db: PulseLoopDatabase = PulseLoopDatabase.getInstance(context),
+    ) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val key = "luckRingActivityRepair.v1"
+        if (prefs.getBoolean(key, false)) return
+        LuckRingActivityRepair.repair(db) ?: return
+        prefs.edit().putBoolean(key, true).apply()
+    }
 }
