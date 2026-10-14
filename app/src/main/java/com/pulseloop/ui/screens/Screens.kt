@@ -755,6 +755,8 @@ fun VitalDetailScreen(
                                 thresholds = displayThresholds(state.thresholds, metric, units, gUnit),
                                 timestamps = state.timestamps,
                                 tooltipTimeFormatter = { ts -> tooltipTime(ts, state.period) },
+                                // The whole calendar period, gaps included (issue #102).
+                                timeDomain = state.windowStart to state.windowEnd,
                             )
                         }
                     }
