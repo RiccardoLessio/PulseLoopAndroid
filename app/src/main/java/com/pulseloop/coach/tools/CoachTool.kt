@@ -49,7 +49,7 @@ data class CoachFeatureFlags(
     val webSearchEnabled: Boolean = false,
     val writeToolsEnabled: Boolean = false,
     val liveMeasurementsEnabled: Boolean = false,
-    val model: String = "gpt-5.4",
+    val model: String = com.pulseloop.coach.config.OpenAIModel.DEFAULT.slug,
     val maxRounds: Int = 15,
     val maxToolCalls: Int = 30,
     val settings: CoachSettings = CoachSettings(),

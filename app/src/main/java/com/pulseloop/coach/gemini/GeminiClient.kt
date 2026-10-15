@@ -126,6 +126,10 @@ class GeminiClient(
         val tools = (req["tools"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
         val textFormat = ((req["text"] as? JsonObject)?.get("format")) as? JsonObject
         val previousResponseId = (req["previous_response_id"] as? JsonPrimitive)?.contentOrNull
+        // The app's `reasoning.effort` (iOS #140). `CoachClientResolver.resolvedReasoningEffort`
+        // never passes one to a 2.x model, which rejects `thinkingLevel`.
+        val thinkingLevel = ((req["reasoning"] as? JsonObject)?.get("effort") as? JsonPrimitive)
+            ?.contentOrNull?.takeIf { it.isNotBlank() }?.uppercase()
 
         if (previousResponseId == null) {
             setupConversation(input)
@@ -133,7 +137,7 @@ class GeminiClient(
             appendContinuation(previousResponseId, input)
         }
 
-        return buildGeminiBody(convertTools(tools), textFormat)
+        return buildGeminiBody(convertTools(tools), textFormat, thinkingLevel)
     }
 
     // ── Conversation setup ───────────────────────────────────────────────
@@ -333,7 +337,7 @@ class GeminiClient(
 
     // ── Build Gemini request body ────────────────────────────────────────
 
-    private fun buildGeminiBody(tools: List<JsonObject>, textFormat: JsonObject?): JsonObject {
+    private fun buildGeminiBody(tools: List<JsonObject>, textFormat: JsonObject?, thinkingLevel: String?): JsonObject {
         val body = mutableMapOf<String, JsonElement>("contents" to JsonArray(contents))
 
         if (systemText.isNotEmpty()) {
@@ -379,6 +383,10 @@ class GeminiClient(
                     genConfig["responseSchema"] = cleanSchema(it)
                 }
             }
+        }
+        // Gemini 3+ thinking depth, only when the user picked a level.
+        thinkingLevel?.let {
+            genConfig["thinkingConfig"] = JsonObject(mapOf("thinkingLevel" to JsonPrimitive(it)))
         }
         if (genConfig.isNotEmpty()) body["generationConfig"] = JsonObject(genConfig)
 

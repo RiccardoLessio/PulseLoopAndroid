@@ -84,12 +84,12 @@ class CoachSummaryService(
         val apiKey = if (resolution != null) resolution.key ?: "" else apiKeyStore.apiKey
         val model = snapshot
             ?.let { CoachClientResolver.activeModel(it, apiKeyStore.model) }
-            ?: apiKeyStore.model.ifEmpty { "gpt-5.4" }
+            ?: apiKeyStore.model.ifEmpty { com.pulseloop.coach.config.OpenAIModel.DEFAULT.slug }
         val flags = CoachFeatureFlags(
             coachEnabled = apiKeyStore.coachEnabled && apiKey.isNotEmpty(),
             webSearchEnabled = apiKeyStore.webSearchEnabled,
             model = model,
-            settings = CoachClientResolver.coachSettings(snapshot),
+            settings = CoachClientResolver.coachSettings(snapshot, model),
         )
         val angle = CoachVarietyHints.angle(built.scopeKey + kind.rawValue)
         val recentTexts = recentSummaryTexts(kind, excludeId = existing?.id)

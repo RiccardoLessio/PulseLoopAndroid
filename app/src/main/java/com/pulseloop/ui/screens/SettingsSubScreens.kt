@@ -275,6 +275,11 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                     var orPrivacy by remember { mutableStateOf(providerStore.orPrivacyRouting) }
                     var orSort by remember { mutableStateOf(providerStore.orProviderSort) }
                     var reasoningEffort by remember { mutableStateOf(providerStore.reasoningEffort) }
+                    // Bumped on every key save/remove so the model picker refetches the provider's
+                    // list with the new key; the key fields' own state changes per keystroke.
+                    var keySaves by remember { mutableIntStateOf(0) }
+                    // The provider's live model list (CoachModelCatalog), for the Reasoning picker.
+                    var liveListing by remember { mutableStateOf<com.pulseloop.coach.config.CoachModelCatalog.Result.Success?>(null) }
                     var imageInput by remember { mutableStateOf(providerStore.imageInputEnabled) }
                     // Local / self-hosted (docs/local-llm-coach.md).
                     var localBaseUrl by remember { mutableStateOf(providerStore.localBaseUrl) }
@@ -396,21 +401,29 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
 
                     when (providerMode) {
                         CoachProviderMode.USER_GEMINI_KEY -> {
-                            ModelDropdown("Model", geminiModel, GeminiModel.entries.map { it.slug to it.blurb }) {
-                                geminiModel = it; providerStore.geminiModel = it
-                            }
+                            CoachModelPicker(
+                                provider = providerMode, providerName = "Gemini", selected = geminiModel,
+                                presets = GeminiModel.entries.map { it.slug to it.blurb },
+                                savedKey = keySaves.let { providerStore.geminiApiKey },
+                                onPick = { geminiModel = it; providerStore.geminiModel = it },
+                                onListing = { liveListing = it },
+                            )
                             KeyField(
                                 label = "Gemini API Key", value = geminiKey, visible = geminiKeyVisible,
                                 saved = providerStore.hasGeminiKey,
                                 onValue = { geminiKey = it }, onVisibility = { geminiKeyVisible = !geminiKeyVisible },
-                                onSave = { providerStore.geminiApiKey = geminiKey },
-                                onRemove = { geminiKey = ""; providerStore.geminiApiKey = "" },
+                                onSave = { providerStore.geminiApiKey = geminiKey; keySaves++ },
+                                onRemove = { geminiKey = ""; providerStore.geminiApiKey = ""; keySaves++ },
                             )
                         }
                         CoachProviderMode.USER_OPENROUTER_KEY -> {
-                            ModelDropdown("Model", orModel, OpenRouterModel.entries.map { it.slug to it.blurb }) {
-                                orModel = it; providerStore.openRouterModel = it
-                            }
+                            CoachModelPicker(
+                                provider = providerMode, providerName = "OpenRouter", selected = orModel,
+                                presets = OpenRouterModel.entries.map { it.slug to it.blurb },
+                                savedKey = keySaves.let { providerStore.openRouterApiKey },
+                                onPick = { orModel = it; providerStore.openRouterModel = it },
+                                onListing = { liveListing = it },
+                            )
                             // The OpenRouter catalog is huge and shifts often — any current
                             // vendor/model slug from openrouter.ai/models works here.
                             OutlinedTextField(
@@ -425,8 +438,8 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                                 label = "OpenRouter API Key", value = orKey, visible = orKeyVisible,
                                 saved = providerStore.hasOpenRouterKey,
                                 onValue = { orKey = it }, onVisibility = { orKeyVisible = !orKeyVisible },
-                                onSave = { providerStore.openRouterApiKey = orKey },
-                                onRemove = { orKey = ""; providerStore.openRouterApiKey = "" },
+                                onSave = { providerStore.openRouterApiKey = orKey; keySaves++ },
+                                onRemove = { orKey = ""; providerStore.openRouterApiKey = ""; keySaves++ },
                             )
                             Spacer(Modifier.height(8.dp))
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -442,15 +455,19 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             ) { providerStore.orProviderSort = it.takeIf { s -> s != "auto" }; orSort = providerStore.orProviderSort }
                         }
                         CoachProviderMode.USER_MINIMAX_KEY -> {
-                            ModelDropdown("Model", minimaxModel, MiniMaxModel.entries.map { it.slug to it.blurb }) {
-                                minimaxModel = it; providerStore.minimaxModel = it
-                            }
+                            CoachModelPicker(
+                                provider = providerMode, providerName = "MiniMax", selected = minimaxModel,
+                                presets = MiniMaxModel.entries.map { it.slug to it.blurb },
+                                savedKey = keySaves.let { providerStore.minimaxApiKey },
+                                onPick = { minimaxModel = it; providerStore.minimaxModel = it },
+                                onListing = { liveListing = it },
+                            )
                             KeyField(
                                 label = "MiniMax API Key", value = minimaxKey, visible = minimaxKeyVisible,
                                 saved = providerStore.hasMinimaxKey,
                                 onValue = { minimaxKey = it }, onVisibility = { minimaxKeyVisible = !minimaxKeyVisible },
-                                onSave = { providerStore.minimaxApiKey = minimaxKey },
-                                onRemove = { minimaxKey = ""; providerStore.minimaxApiKey = "" },
+                                onSave = { providerStore.minimaxApiKey = minimaxKey; keySaves++ },
+                                onRemove = { minimaxKey = ""; providerStore.minimaxApiKey = ""; keySaves++ },
                             )
                         }
                         CoachProviderMode.LOCAL_OPENAI_COMPAT -> {
@@ -676,16 +693,20 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             )
                         }
                         else -> {
-                            // OpenAI (and legacy modes): the original model picker + key field.
-                            ModelDropdown("Model", selectedModel, models) {
-                                selectedModel = it; keyStore.model = it
-                            }
+                            // OpenAI (and legacy modes): the model picker + key field.
+                            CoachModelPicker(
+                                provider = CoachProviderMode.USER_OPENAI_KEY, providerName = "OpenAI", selected = selectedModel,
+                                presets = models,
+                                savedKey = keySaves.let { keyStore.apiKey },
+                                onPick = { selectedModel = it; keyStore.model = it },
+                                onListing = { liveListing = it },
+                            )
                             KeyField(
                                 label = "OpenAI API Key", value = apiKey, visible = apiKeyVisible,
                                 saved = keyStore.apiKey.isNotBlank(),
                                 onValue = { apiKey = it }, onVisibility = { apiKeyVisible = !apiKeyVisible },
-                                onSave = { keyStore.apiKey = apiKey },
-                                onRemove = { apiKey = ""; keyStore.apiKey = "" },
+                                onSave = { keyStore.apiKey = apiKey; keySaves++ },
+                                onRemove = { apiKey = ""; keyStore.apiKey = ""; keySaves++ },
                             )
                         }
                     }
@@ -696,11 +717,31 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
-                    Spacer(Modifier.height(8.dp))
-                    ModelDropdown(
-                        "Reasoning effort", reasoningEffort ?: "default",
-                        listOf("default" to "Model decides (default)", "low" to "Fastest", "medium" to "Balanced", "high" to "Deepest — more tokens"),
-                    ) { providerStore.reasoningEffort = it.takeIf { s -> s != "default" }; reasoningEffort = providerStore.reasoningEffort }
+                    // Reasoning effort / Gemini thinking level (iOS #140). The levels differ per model
+                    // (GPT-6 Sol rejects None, DeepSeek has no Medium), so the picker lists only what
+                    // the selected model accepts, and shows "default" for a stored level it doesn't —
+                    // matching CoachClientResolver.resolvedReasoningEffort, which won't send it.
+                    val effortProvider = if (providerMode in setOf(
+                            CoachProviderMode.USER_GEMINI_KEY, CoachProviderMode.USER_OPENROUTER_KEY,
+                            CoachProviderMode.USER_MINIMAX_KEY, CoachProviderMode.LOCAL_OPENAI_COMPAT,
+                        )) providerMode else CoachProviderMode.USER_OPENAI_KEY
+                    val effortModel = when (effortProvider) {
+                        CoachProviderMode.USER_GEMINI_KEY -> geminiModel
+                        CoachProviderMode.USER_OPENROUTER_KEY -> orModel
+                        CoachProviderMode.USER_OPENAI_KEY -> selectedModel
+                        else -> ""
+                    }
+                    val liveEntry = liveListing?.find(effortModel)
+                    val effortOptions = com.pulseloop.coach.config.ReasoningEfforts.options(effortProvider, effortModel, liveEntry)
+                    if (effortOptions.isNotEmpty()) {
+                        val shownEffort = com.pulseloop.coach.config.ReasoningEfforts.resolve(effortProvider, effortModel, reasoningEffort, liveEntry)
+                        Spacer(Modifier.height(8.dp))
+                        ModelDropdown(
+                            "Reasoning effort",
+                            com.pulseloop.coach.config.ReasoningEffort.fromRaw(shownEffort)?.label ?: "Default",
+                            listOf("default" to "Model decides (default)") + effortOptions.map { it.rawValue to it.label },
+                        ) { providerStore.reasoningEffort = it.takeIf { s -> s != "default" }; reasoningEffort = providerStore.reasoningEffort }
+                    }
 
                     // Image attachments (iOS #31): gates the attach button in the coach chat.
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

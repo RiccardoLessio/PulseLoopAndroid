@@ -22,8 +22,10 @@ class GeminiClientTest {
         tools: List<JsonObject> = emptyList(),
         textFormat: JsonObject? = null,
         previousResponseId: String? = null,
+        effort: String? = null,
     ) = JsonObject(buildMap {
         put("model", JsonPrimitive("gemini-2.5-flash"))
+        effort?.let { put("reasoning", JsonObject(mapOf("effort" to JsonPrimitive(it)))) }
         put("input", JsonArray(input))
         put("tools", JsonArray(tools))
         textFormat?.let { put("text", JsonObject(mapOf("format" to it))) }
@@ -47,6 +49,21 @@ class GeminiClientTest {
             )),
         )))),
     ))
+
+    // ── Thinking level (iOS #140) ───────────────────────────────────────
+
+    @Test
+    fun testReasoningEffortIsSentAsThinkingLevel() {
+        val body = GeminiClient("key").buildRequestBody(request(listOf(msg("user", "hi")), effort = "high"))
+        val level = body["generationConfig"]!!.jsonObject["thinkingConfig"]!!.jsonObject["thinkingLevel"]!!.jsonPrimitive.content
+        assertEquals("HIGH", level)
+    }
+
+    @Test
+    fun testNoEffortSendsNoThinkingConfig() {
+        val body = GeminiClient("key").buildRequestBody(request(listOf(msg("user", "hi"))))
+        assertNull(body["generationConfig"]?.jsonObject?.get("thinkingConfig"))
+    }
 
     // ── First-turn conversion ───────────────────────────────────────────
 

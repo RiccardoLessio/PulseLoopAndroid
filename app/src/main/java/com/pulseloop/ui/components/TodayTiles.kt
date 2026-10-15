@@ -21,7 +21,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
@@ -169,7 +172,13 @@ fun ActivityTile(
             // text further would only move the breaking point — [TodayTileMetrics.height] now grows
             // the tile with the font scale instead. Don't re-pin the height to a dp literal.
             val compact = TextStyle(platformStyle = PlatformTextStyle(includeFontPadding = false))
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.weight(1f)) {
+            // Last line of defence against the clipping above, reported again in October 2026 on an
+            // unknown build and phone (steps and distance cut off, calories missing). The column
+            // still reports its full height, so the tile grows to fit whenever the grid lets it;
+            // if the tile ends up shorter anyway, the column is scaled down to fit instead of
+            // being cut off. The rings already shrink to the height they get.
+            ScaleDownToFit(Modifier.weight(1f)) {
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 values.forEach { value ->
                     Column {
                         Text(
@@ -193,6 +202,30 @@ fun ActivityTile(
                         )
                     }
                 }
+            }
+            }
+        }
+    }
+}
+
+/**
+ * Lays out [content] at its natural height and, when the incoming height is smaller, draws it
+ * scaled down (anchored left, centred vertically) so nothing is clipped. Intrinsic measurements
+ * pass through unchanged, so a parent that asks how tall the content wants to be still gets the
+ * full answer — scaling only kicks in when that answer wasn't honoured.
+ */
+@Composable
+internal fun ScaleDownToFit(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content, modifier) { measurables, constraints ->
+        val placeable = measurables.first().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val maxHeight = if (constraints.hasBoundedHeight) constraints.maxHeight else placeable.height
+        val height = placeable.height.coerceAtMost(maxHeight).coerceAtLeast(constraints.minHeight)
+        val scale = if (placeable.height > height && placeable.height > 0) height / placeable.height.toFloat() else 1f
+        layout(placeable.width, height) {
+            placeable.placeWithLayer(0, (height - placeable.height) / 2) {
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0f, 0.5f)
             }
         }
     }
