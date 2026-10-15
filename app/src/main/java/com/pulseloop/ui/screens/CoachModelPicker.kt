@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import com.pulseloop.coach.config.CoachModelCatalog
 import com.pulseloop.coach.config.CoachProviderMode
 import com.pulseloop.ui.theme.PulseColors
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -49,7 +50,9 @@ fun CoachModelPicker(
                 listing = result
                 onListing(result as? CoachModelCatalog.Result.Success)
             } finally {
-                loading = false
+                // A cancelled job's finally can run after its replacement set `loading`; only the
+                // live job clears it, or the replacement's fetch would look finished.
+                if (isActive) loading = false
             }
         }
     }
