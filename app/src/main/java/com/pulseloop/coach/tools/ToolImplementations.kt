@@ -802,13 +802,15 @@ object ActionTools {
         val startTime = params["start_time"]?.jsonPrimitive?.contentOrNull
 
         val now = System.currentTimeMillis()
-        var startTs = startTime?.let { CoachDataAccess.parseLocalDate(it) }
+        val givenStart = CoachDataAccess.resolveStart(date, startTime)
+        var startTs = givenStart
             ?: CoachDataAccess.parseLocalDate(date)?.plus(12 * 3600_000L)
             ?: now
         // The same-day noon default can land in the future (logging "today" in the morning) and
-        // ManualActivityService rejects future-ending sessions; pull an unspecified start back so
-        // the session ends by now (mirrors ActionTools.swift's createActivitySession).
-        if (startTime == null && startTs + (durMin * 60_000).toLong() > now) {
+        // ManualActivityService rejects future-ending sessions; pull a defaulted start back so
+        // the session ends by now (mirrors ActionTools.swift's createActivitySession). That
+        // includes a start_time we couldn't read, which used to skip this and fail the write.
+        if (givenStart == null && startTs + (durMin * 60_000).toLong() > now) {
             startTs = now - (durMin * 60_000).toLong()
         }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Check
@@ -37,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.data.PulseLoopDatabase
@@ -75,6 +77,8 @@ fun WorkoutSummaryScreen(
     val units = remember { ApiKeyStore(context) }.resolvedUnitSystem
     val scope = rememberCoroutineScope()
     var session by remember { mutableStateOf<ActivitySessionEntity?>(null) }
+    // Separate from `session == null`, which is also the state while the first load runs.
+    var loaded by remember { mutableStateOf(false) }
     var points by remember { mutableStateOf<List<ActivityGpsPointEntity>>(emptyList()) }
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
@@ -94,10 +98,10 @@ fun WorkoutSummaryScreen(
         }
     }
 
-    LaunchedEffect(sessionId) { reload() }
+    LaunchedEffect(sessionId) { reload(); loaded = true }
 
     val s = session ?: run {
-        Box(Modifier.fillMaxSize().background(PulseColors.background))
+        if (loaded) MissingWorkout(onBack) else Box(Modifier.fillMaxSize().background(PulseColors.background))
         return
     }
     // Duration excludes pauses and is clamped at 0 (iOS clamps in ActivityMeta.duration's
@@ -556,4 +560,29 @@ private fun SplitsCard(points: List<ActivityGpsPointEntity>, units: UnitSystem, 
 private fun paceLabel(secPerUnit: Double, paceUnit: String): String {
     val total = Math.round(secPerUnit).toInt()
     return "%d:%02d %s".format(total / 60, total % 60, paceUnit)
+}
+
+/**
+ * A stale route — the session id no longer resolves, e.g. after a delete or a demo-data reseed.
+ * Fills the screen with a clear message and an explicit way back instead of a blank dead end
+ * (iOS #101 `RecordViews.swift` `ContentUnavailableView`).
+ */
+@Composable
+private fun MissingWorkout(onBack: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().background(PulseColors.background).padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(Icons.AutoMirrored.Filled.DirectionsRun, null, tint = PulseColors.textMuted, modifier = Modifier.size(48.dp))
+        Spacer(Modifier.height(12.dp))
+        Text("Workout not found", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = PulseColors.textPrimary)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "This workout is no longer in local storage. It may have been deleted or replaced.",
+            fontSize = 14.sp, color = PulseColors.textMuted, textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(16.dp))
+        TextButton(onClick = onBack) { Text("Back", color = PulseColors.accent) }
+    }
 }
