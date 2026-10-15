@@ -101,15 +101,16 @@ fun PulseLoopApp() {
                 flagsProvider = {
                     val resolution = com.pulseloop.coach.config.CoachClientResolver.resolve(providerStore, apiKeyStore)
                     val providerSettings = providerStore.snapshot()
+                    val activeModel = com.pulseloop.coach.config.CoachClientResolver.activeModel(
+                        providerSettings, apiKeyStore.model,
+                    )
                     CoachFeatureFlags(
                         coachEnabled = apiKeyStore.coachEnabled && resolution.key != null,
                         webSearchEnabled = apiKeyStore.webSearchEnabled,
                         writeToolsEnabled = false,  // safe default
                         liveMeasurementsEnabled = true,
-                        model = com.pulseloop.coach.config.CoachClientResolver.activeModel(
-                            providerSettings, apiKeyStore.model,
-                        ),
-                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings),
+                        model = activeModel,
+                        settings = com.pulseloop.coach.config.CoachClientResolver.coachSettings(providerSettings, activeModel),
                         providerMode = providerSettings.providerMode,
                     )
                 },

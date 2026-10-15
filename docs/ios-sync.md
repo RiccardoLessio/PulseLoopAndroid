@@ -29,10 +29,10 @@ the work list, and assembling one from all three is how items get missed.
 |---|---|
 | **Canonical iOS repo** | `github.com/saksham2001/PulseLoopiOS` (always `main`) |
 | **Fork baseline (iOS)** | `600c7a8` — Merge PR #6, 2026-06-20 |
-| **Last triaged iOS commit** | `124877f` — Merge PR #101 (simulator launch-arg hardening), 2026-10-02 |
-| **Last triage date** | 2026-10-07 — see [2026-10-07 triage](#2026-10-07-triage-since-439ca81--124877f-5-first-parent) |
-| **Last port date** | 2026-08-23 — PR #96 nutrition **complete**: barcode scanner + AI meal analysis (`e80c76c`) on top of the OFF client (`a13238d`) and five coach tools (`05d8833`); plus the self-hosted-provider schema fix they exposed (`d3d1371`). 2026-08-22 — #130 RWfit JieLi history (`c9be848`), Workout pause intervals (`71f251e`), PR #94 `CoachNotificationDataTrigger` (`9d43227`), PR #93 hardening (`c95b6e8`) |
-| **Range covered** | **2026-10-07:** 5 first-parent items since `439ca81`: PRs #133, #138, #101 + 2 direct commits (`89024c8` version, `21ff323` docs) → 3 PRs leave Android work, none ported yet (see the Outstanding list). **Previously:** 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **all 12 ported** (#130 was backed out as fabricated, then rebuilt from the vendor decompile — see its row below). Verified against a live `git fetch` on 2026-08-23: `origin/main` is `439ca81` and local `main` is 0 commits behind, so upstream is fully triaged and ported |
+| **Last triaged iOS commit** | `8833ee0` — Merge PR #140 (coach model catalog, Oct 2026) |
+| **Last triage date** | 2026-10-14 — see [2026-10-14 triage](#2026-10-14-triage-since-124877f--8833ee0-1-first-parent) |
+| **Last port date** | 2026-10-14 — PR #140 coach model catalog + per-model reasoning levels, plus live per-provider model lists (`52c25e9`). 2026-08-23 — PR #96 nutrition **complete**: barcode scanner + AI meal analysis (`e80c76c`) on top of the OFF client (`a13238d`) and five coach tools (`05d8833`); plus the self-hosted-provider schema fix they exposed (`d3d1371`). 2026-08-22 — #130 RWfit JieLi history (`c9be848`), Workout pause intervals (`71f251e`), PR #94 `CoachNotificationDataTrigger` (`9d43227`), PR #93 hardening (`c95b6e8`) |
+| **Range covered** | **2026-10-14:** 1 first-parent item since `124877f`: PR #140 → ported. **2026-10-07:** 5 first-parent items since `439ca81`: PRs #133, #138, #101 + 2 direct commits (`89024c8` version, `21ff323` docs) → 3 PRs leave Android work, none ported yet (see the Outstanding list). **Previously:** 12 first-parent items since `0d1b965` (2026-07-18): PRs #73, #94–#100, #130, #131, #93 + 1 direct commit (`160c775`) → **all 12 ported** (#130 was backed out as fabricated, then rebuilt from the vendor decompile — see its row below). Verified against a live `git fetch` on 2026-08-23: `origin/main` is `439ca81` and local `main` is 0 commits behind, so upstream is fully triaged and ported |
 
 ---
 
@@ -172,6 +172,7 @@ seeded-data mode). **SKIP** — no portable behavior, Android has its own indepe
 | ☑ | [#133](https://github.com/saksham2001/PulseLoopiOS/pull/133) `83850e1` | 08-31 | Local / self-hosted LLM coach provider — the iOS port *of Android's own* PR #51 (`c6167b8`), so the provider is ALREADY-HAVE. Its follow-up fix `6d006ec` carries three general coach bugs Android still has. | **PARTIAL** (`6d006ec` only) | S×3 | `cedb1df` (follow-up `6d006ec`; provider already Android PR #51) |
 | ☐ | [#138](https://github.com/saksham2001/PulseLoopiOS/pull/138) `e16c05c` | 09-06 | RWfit initialization, paged history sync, manual readings (32 files, +2.4k) | **ADAPT** (vendor bytes win; see note) | L | Outstanding row 3 |
 | ☑ | [#101](https://github.com/saksham2001/PulseLoopiOS/pull/101) `124877f` | 10-02 | Simulator launch-arg hardening + usable missing-workout fallback screen | **PARTIAL** (fallback screen only) | S | `cedb1df` (fallback screen) |
+| ☑ | [#140](https://github.com/saksham2001/PulseLoopiOS/pull/140) `8833ee0` | 10-14 | Coach model catalog for GPT-6, Claude 5.5, Gemini 4 + per-model reasoning levels | **ADAPT** (Gemini keeps the `-latest` aliases; Android adds live model lists) | M | `52c25e9` |
 
 ## Port priority — open items (as of 2026-08-08)
 
@@ -496,6 +497,12 @@ their own M-sized item and drop to Tier 2/3; only #61d/#61e are Tier-1-sized.
 
 - **#79 Activity Year-trends** (S) — blocked: no Activity-trends screen on Android yet (not created by #57's redesign either).
 - ~~**#74 Measurement-Frequency relocation**~~ ✅ **DONE** `368a3f2` (2026-07-19) — see the session note below.
+
+### 2026-10-14 triage (since `124877f` → `8833ee0`, 1 first-parent)
+
+| Item | Verdict | Outcome |
+|------|---------|---------|
+| PR #140 `8833ee0` coach model catalog | ADAPT | Ported in `52c25e9`. Presets (GPT-6 Luna/Sol/Astra; OpenRouter Claude 5.5, GPT-6, Gemini 4 Argon / 3.8 Flash, DeepSeek V4.1; MiniMax without M2.5/M2.7), `ReasoningEffort` with per-model levels and the drop-unsupported rule (`ReasoningEfforts.resolve`, applied in `CoachClientResolver.coachSettings` and meal analysis), Gemini `thinkingConfig.thinkingLevel`, prices. **Differences:** Gemini keeps Android's rolling `-latest` presets (issue #22) instead of iOS's versioned slugs; Gemini `thoughtSignature` echo was already on Android. **Android-only:** `CoachModelCatalog` reads each provider's own model list (OpenAI, Gemini, OpenRouter, MiniMax), flags a stored model the provider no longer lists or is retiring (OpenRouter `expiration_date`), and takes OpenRouter's live `reasoning.supported_efforts` for non-preset models. iOS could adopt the same. |
 
 ### 2026-10-07 triage (since `439ca81` → `124877f`, 5 first-parent)
 

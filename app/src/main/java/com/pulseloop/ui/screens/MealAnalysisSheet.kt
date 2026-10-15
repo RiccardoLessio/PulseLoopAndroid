@@ -716,14 +716,14 @@ object MealEstimator {
                 OpenAIRequestBuilder.message("system", MealAnalysisLogic.systemPrompt),
                 OpenAIRequestBuilder.message("user", prompt, images),
             ))
-            // iOS passes flags.settings.reasoningEffort through OpenAIRequestBuilder.data
+            // iOS passes flags.settings.resolvedReasoningEffort through OpenAIRequestBuilder.data
             // (MealAnalysisSheet.swift:401); the model-aware overload also drops `reasoning`
             // for the legacy chat families that reject it outright.
             val requestBody = JsonObject(mapOf(
                 "model" to JsonPrimitive(model),
                 "input" to input,
                 "text" to JsonObject(mapOf("format" to MealAnalysisLogic.textFormat())),
-            ) + OpenAIRequestBuilder.reasoningParams(providerStore.snapshot().reasoningEffort, model))
+            ) + OpenAIRequestBuilder.reasoningParams(CoachClientResolver.resolvedReasoningEffort(providerStore.snapshot(), model), model))
             try {
                 val response = resolution.client.send(requestBody.toString().toByteArray())
                 val estimate = MealAnalysisLogic.decode(response.outputText)
