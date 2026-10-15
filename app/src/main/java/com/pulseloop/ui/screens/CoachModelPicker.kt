@@ -36,13 +36,22 @@ fun CoachModelPicker(
     var listing by remember(provider) { mutableStateOf<CoachModelCatalog.Result?>(null) }
     var loading by remember(provider) { mutableStateOf(false) }
 
-    suspend fun load(force: Boolean) {
-        if (savedKey.isBlank()) { listing = null; onListing(null); return }
-        loading = true
-        val result = CoachModelCatalog.fetch(provider, savedKey, force)
-        listing = result
-        onListing(result as? CoachModelCatalog.Result.Success)
-        loading = false
+    // One load at a time: a Refresh still in flight when the key changes (or another Refresh) is
+    // cancelled, so an older key's answer can't land on top of the current one.
+    var job by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun load(force: Boolean) {
+        job?.cancel()
+        if (savedKey.isBlank()) { listing = null; loading = false; onListing(null); return }
+        job = scope.launch {
+            loading = true
+            try {
+                val result = CoachModelCatalog.fetch(provider, savedKey, force)
+                listing = result
+                onListing(result as? CoachModelCatalog.Result.Success)
+            } finally {
+                loading = false
+            }
+        }
     }
     LaunchedEffect(provider, savedKey) { load(force = false) }
 
@@ -119,7 +128,7 @@ fun CoachModelPicker(
         }
         Text(status, style = MaterialTheme.typography.bodySmall, color = color, modifier = Modifier.weight(1f))
         if (savedKey.isNotBlank() && !loading) {
-            TextButton(onClick = { scope.launch { load(force = true) } }) {
+            TextButton(onClick = { load(force = true) }) {
                 Text(if (listing is CoachModelCatalog.Result.Failure) "Retry" else "Refresh")
             }
         }

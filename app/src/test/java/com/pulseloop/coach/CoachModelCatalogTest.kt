@@ -130,6 +130,20 @@ class CoachModelCatalogTest {
         assertNull(ReasoningEfforts.resolve(gemini, "gemini-flash-latest", "xhigh"))
     }
 
+    /** Review: offline / proxy send OpenAI requests, so they keep the OpenAI rules. */
+    @Test
+    fun `offline and proxy modes resolve like openai`() {
+        assertEquals("high", ReasoningEfforts.resolve(CoachProviderMode.OFFLINE_STUB, "gpt-6.1-sol", "high"))
+        assertNull(ReasoningEfforts.resolve(CoachProviderMode.BACKEND_PROXY, "gpt-6.1-sol", "none"))
+    }
+
+    @Test
+    fun `minimax presets are never flagged, a retired family is`() {
+        val listing = CoachModelCatalog.Result.Success(listOf(CoachModelCatalog.Entry("MiniMax-M3")), 0)
+        assertFalse(CoachModelCatalog.isUnlisted(CoachProviderMode.USER_MINIMAX_KEY, listing, "MiniMax-M2.1-highspeed"))
+        assertTrue(CoachModelCatalog.isUnlisted(CoachProviderMode.USER_MINIMAX_KEY, listing, "MiniMax-M2.7"))
+    }
+
     @Test
     fun `providers that send no reasoning field hide the picker`() {
         assertTrue(ReasoningEfforts.options(CoachProviderMode.USER_MINIMAX_KEY, "MiniMax-M3").isEmpty())

@@ -28,7 +28,10 @@ object ReasoningEfforts {
                 GeminiModel.entries.firstOrNull { it.slug == slug }?.reasoningEfforts ?: geminiLevels(slug)
             // Neither client sends a `reasoning` field (MiniMax reasons inline; see the local
             // client's header), so there is nothing to choose.
-            else -> emptyList()
+            CoachProviderMode.USER_MINIMAX_KEY, CoachProviderMode.LOCAL_OPENAI_COMPAT -> emptyList()
+            // Offline / backend proxy send OpenAI requests (CoachClientResolver's fallback branch),
+            // and Settings shows the OpenAI picker for them.
+            else -> known(CoachProviderMode.USER_OPENAI_KEY, slug, live)
         }
     }
 

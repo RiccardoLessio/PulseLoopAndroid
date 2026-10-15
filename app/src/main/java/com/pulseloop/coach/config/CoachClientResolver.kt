@@ -120,7 +120,12 @@ object CoachClientResolver {
     fun coachSettings(settings: CoachProviderSettings?, model: String): CoachSettings =
         CoachSettings(reasoningEffort = settings?.let { resolvedReasoningEffort(it, model) })
 
-    /** The stored effort, or null when [model] doesn't accept it — see [ReasoningEfforts.resolve]. */
+    /**
+     * The stored effort, or null when [model] doesn't accept it — see [ReasoningEfforts.resolve].
+     * Best effort for an OpenRouter model outside the presets: its levels come from the in-memory
+     * model list, so until Settings has fetched it this session, the stored effort is sent as is
+     * (the pre-#140 behaviour) rather than guessed at.
+     */
     fun resolvedReasoningEffort(settings: CoachProviderSettings, model: String): String? =
         ReasoningEfforts.resolve(
             settings.providerMode, model, settings.reasoningEffort,

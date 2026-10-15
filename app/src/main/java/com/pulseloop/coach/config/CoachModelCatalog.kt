@@ -55,6 +55,9 @@ object CoachModelCatalog {
         if (slug.isEmpty() || listing.find(slug) != null) return false
         if (provider == CoachProviderMode.USER_GEMINI_KEY && slug.endsWith("-latest")) return false
         if (provider == CoachProviderMode.USER_OPENAI_KEY && DATED_SNAPSHOT.containsMatchIn(slug)) return false
+        // Unverified whether MiniMax lists every variant (the -highspeed ones), so only a slug we
+        // no longer preset — M2.5/M2.7 after their retirement — is flagged there.
+        if (provider == CoachProviderMode.USER_MINIMAX_KEY && MiniMaxModel.entries.any { it.slug == slug }) return false
         return true
     }
 
@@ -89,6 +92,8 @@ object CoachModelCatalog {
             Result.Success(entries, System.currentTimeMillis()).also {
                 cache[provider] = Cached(apiKey.hashCode(), it)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: ResponsesError.Http) {
             Result.Failure(
                 if (e.status == 401 || e.status == 403) "The provider rejected the key (HTTP ${e.status})."
@@ -167,7 +172,7 @@ object CoachModelCatalog {
         var token: String? = null
         // The listing is a few dozen models; the page cap is only a guard against a looping token.
         repeat(MAX_GEMINI_PAGES) {
-            val page = get("$url?pageSize=1000" + (token?.let { "&pageToken=$it" } ?: ""), mapOf("x-goog-api-key" to apiKey))
+            val page = get("$url?pageSize=1000" + (token?.let { "&pageToken=" + java.net.URLEncoder.encode(it, "UTF-8") } ?: ""), mapOf("x-goog-api-key" to apiKey))
             val (entries, next) = parseGeminiPage(page)
             all += entries
             token = next ?: return all.distinctBy { it.id }.sortedBy { it.id }
