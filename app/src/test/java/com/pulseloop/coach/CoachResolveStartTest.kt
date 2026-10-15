@@ -18,6 +18,7 @@ class CoachResolveStartTest {
         assertEquals(at(19, 0), CoachDataAccess.resolveStart("2026-10-14", "7:00 PM", utc))
         assertEquals(at(19, 0), CoachDataAccess.resolveStart("2026-10-14", "7:00pm", utc))
         assertEquals(at(0, 30), CoachDataAccess.resolveStart("2026-10-14", "12:30 AM", utc))
+        assertEquals(at(19, 0), CoachDataAccess.resolveStart("2026-10-14", "19:00:00", utc))
     }
 
     @Test
@@ -25,6 +26,8 @@ class CoachResolveStartTest {
         assertEquals(at(18, 15), CoachDataAccess.resolveStart("2026-10-14", "2026-10-14T18:15:00Z", utc))
         assertEquals(at(18, 15), CoachDataAccess.resolveStart("2026-10-14", "2026-10-14T20:15:00+02:00", utc))
         assertEquals(at(18, 15), CoachDataAccess.resolveStart("2026-10-14", "2026-10-14T18:15", utc))
+        assertEquals(at(18, 15), CoachDataAccess.resolveStart("2026-10-14", "2026-10-14 18:15", utc))
+        assertEquals(at(18, 15), CoachDataAccess.resolveStart("2026-10-14", "2026-10-14 18:15:00Z", utc))
     }
 
     @Test

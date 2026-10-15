@@ -37,19 +37,23 @@ object CoachDataAccess {
      */
     fun resolveStart(date: String, time: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
         val value = time?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        try { return java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli() } catch (_: Exception) {}
-        try { return java.time.LocalDateTime.parse(value).atZone(zone).toInstant().toEpochMilli() } catch (_: Exception) {}
+        // `2026-10-14 19:00` (SQL-style space instead of `T`) is as common from models as ISO.
+        val iso = if (DATE_SPACE_TIME.matches(value)) value.replaceFirst(' ', 'T') else value
+        try { return java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli() } catch (_: Exception) {}
+        try { return java.time.LocalDateTime.parse(iso).atZone(zone).toInstant().toEpochMilli() } catch (_: Exception) {}
         val day = try { LocalDate.parse(date.trim().take(10), DateTimeFormatter.ISO_LOCAL_DATE) } catch (_: Exception) { return null }
-        for (pattern in CLOCK_PATTERNS) {
-            val formatter = java.time.format.DateTimeFormatterBuilder()
-                .parseCaseInsensitive().appendPattern(pattern).toFormatter(java.util.Locale.US)
+        for (formatter in CLOCK_FORMATTERS) {
             val clock = try { java.time.LocalTime.parse(value, formatter) } catch (_: Exception) { continue }
             return day.atTime(clock.hour, clock.minute).atZone(zone).toInstant().toEpochMilli()
         }
         return null
     }
 
-    private val CLOCK_PATTERNS = listOf("HH:mm", "H:mm", "h:mm a", "h:mma")
+    private val DATE_SPACE_TIME = Regex("""\d{4}-\d{2}-\d{2} \d.*""")
+    private val CLOCK_FORMATTERS = listOf("HH:mm", "H:mm", "HH:mm:ss", "H:mm:ss", "h:mm a", "h:mma").map {
+        java.time.format.DateTimeFormatterBuilder()
+            .parseCaseInsensitive().appendPattern(it).toFormatter(java.util.Locale.US)
+    }
 
     fun startOfDay(ts: Long): Long =
         Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS)
