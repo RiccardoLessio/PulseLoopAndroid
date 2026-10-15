@@ -10,13 +10,28 @@ import org.junit.Test
 class CoachModelPresetsTest {
 
     @Test
-    fun testDeepSeekPresetUsesV4FlashSlug() {
-        assertEquals("deepseek/deepseek-v4-flash", OpenRouterModel.DEEPSEEK_V4.slug)
+    fun testDeepSeekPresetUsesV41FlashSlug() {
+        assertEquals("deepseek/deepseek-v4.1-flash", OpenRouterModel.DEEPSEEK.slug)
     }
 
     @Test
     fun testOpenRouterDefaultIsClaudeSonnet() {
-        assertEquals("anthropic/claude-sonnet-4.6", OpenRouterModel.DEFAULT.slug)
+        assertEquals("anthropic/claude-sonnet-5.5", OpenRouterModel.DEFAULT.slug)
+    }
+
+    /** iOS #140: MiniMax closes M2.5/M2.7 to new users Oct 19 2026 and retires them Nov 18. */
+    @Test
+    fun testRetiringMiniMaxFamiliesAreNotOffered() {
+        MiniMaxModel.entries.forEach {
+            assertFalse(it.slug, it.slug.startsWith("MiniMax-M2.5") || it.slug.startsWith("MiniMax-M2.7"))
+        }
+    }
+
+    @Test
+    fun testEveryReasoningPresetListsAtLeastOneLevel() {
+        OpenAIModel.entries.forEach { assertTrue(it.slug, it.reasoningEfforts.isNotEmpty()) }
+        OpenRouterModel.entries.forEach { assertTrue(it.slug, it.reasoningEfforts.isNotEmpty()) }
+        GeminiModel.entries.forEach { assertTrue(it.slug, it.reasoningEfforts.isNotEmpty()) }
     }
 
     @Test
@@ -48,9 +63,9 @@ class CoachModelPresetsTest {
     }
 
     @Test
-    fun testOpenAIDefaultMatchesLegacyStoreDefault() {
-        // ApiKeyStore.model defaults to "gpt-5.4"; the preset default must agree.
-        assertEquals("gpt-5.4", OpenAIModel.DEFAULT.slug)
+    fun testOpenAIDefaultIsSol() {
+        // iOS #140. ApiKeyStore.model reads a blank store as this default.
+        assertEquals("gpt-6.1-sol", OpenAIModel.DEFAULT.slug)
     }
 
     /** Issue #77: a stored retired slug must not strand the user on a model the picker no longer offers. */

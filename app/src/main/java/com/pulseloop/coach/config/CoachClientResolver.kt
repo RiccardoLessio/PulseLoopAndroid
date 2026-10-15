@@ -113,10 +113,19 @@ object CoachClientResolver {
      * The per-request settings for the active provider, shared by the chat
      * flags provider and the summary service. `reasoningEffort` keeps the
      * store's null=omit contract: null (or no settings) sends no `reasoning`
-     * field, which models like gpt-4o require.
+     * field, which models like gpt-4o require. It is also dropped when [model]
+     * doesn't accept the stored level (iOS #140 `resolvedReasoningEffort`): an
+     * unsupported level is an HTTP 400 on every turn.
      */
-    fun coachSettings(settings: CoachProviderSettings?): CoachSettings =
-        CoachSettings(reasoningEffort = settings?.reasoningEffort)
+    fun coachSettings(settings: CoachProviderSettings?, model: String): CoachSettings =
+        CoachSettings(reasoningEffort = settings?.let { resolvedReasoningEffort(it, model) })
+
+    /** The stored effort, or null when [model] doesn't accept it — see [ReasoningEfforts.resolve]. */
+    fun resolvedReasoningEffort(settings: CoachProviderSettings, model: String): String? =
+        ReasoningEfforts.resolve(
+            settings.providerMode, model, settings.reasoningEffort,
+            CoachModelCatalog.cachedEntry(settings.providerMode, model),
+        )
 
     /**
      * The model slug the orchestrator/services should put in the request body
