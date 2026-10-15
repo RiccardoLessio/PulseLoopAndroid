@@ -28,6 +28,29 @@ object CoachDataAccess {
         } catch (_: Exception) { null }
     }
 
+    /**
+     * A tool's `start_time` on [date], in epoch millis. Accepts the documented 24-hour clock
+     * (`19:00`), the `7:00 PM` spelling local models favour, and a full ISO timestamp (with or
+     * without an offset). Null when [time] is blank or unreadable — the caller then falls back to
+     * its own default. [parseLocalDate] alone kept only the date part, so `19:00` fell back to
+     * noon and an ISO timestamp landed on midnight (iOS 6d006ec).
+     */
+    fun resolveStart(date: String, time: String?, zone: ZoneId = ZoneId.systemDefault()): Long? {
+        val value = time?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        try { return java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli() } catch (_: Exception) {}
+        try { return java.time.LocalDateTime.parse(value).atZone(zone).toInstant().toEpochMilli() } catch (_: Exception) {}
+        val day = try { LocalDate.parse(date.trim().take(10), DateTimeFormatter.ISO_LOCAL_DATE) } catch (_: Exception) { return null }
+        for (pattern in CLOCK_PATTERNS) {
+            val formatter = java.time.format.DateTimeFormatterBuilder()
+                .parseCaseInsensitive().appendPattern(pattern).toFormatter(java.util.Locale.US)
+            val clock = try { java.time.LocalTime.parse(value, formatter) } catch (_: Exception) { continue }
+            return day.atTime(clock.hour, clock.minute).atZone(zone).toInstant().toEpochMilli()
+        }
+        return null
+    }
+
+    private val CLOCK_PATTERNS = listOf("HH:mm", "H:mm", "h:mm a", "h:mma")
+
     fun startOfDay(ts: Long): Long =
         Instant.ofEpochMilli(ts).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS)
             .toInstant().toEpochMilli()
