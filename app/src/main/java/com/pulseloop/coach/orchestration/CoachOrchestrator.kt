@@ -170,7 +170,20 @@ class CoachOrchestrator(
             }
 
             rounds++
-            response = send(client, flags, outputs, toolSpecs, textFormat, response.id)
+            response = try {
+                send(client, flags, outputs, toolSpecs, textFormat, response.id)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The tools already ran (and may have written data). Keep their trace and any
+                // pending actions when the follow-up request times out or loses its connection;
+                // otherwise the error bubble hides the only evidence of what ran (iOS 6d006ec).
+                return@withContext TurnResult(
+                    assistant = CoachFallbacks.fallback(), trace = trace,
+                    pendingActions = toolContext.pendingActions.toList(),
+                    usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
+                    error = CoachTurnError.from(e))
+            }
             addUsage(response.usage)
         }
 
@@ -184,8 +197,19 @@ class CoachOrchestrator(
             // error bubble, but keep the trace from the tools that did run.
             TurnResult(
                 assistant = CoachFallbacks.parseError(), trace = trace,
+                pendingActions = toolContext.pendingActions.toList(),
                 usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
                 error = CoachTurnError(code = "Bad response", reason = e.reason))
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A schema-repair request can fail after tools already ran: keep them attached to
+            // the error, as a parse exhaustion does (iOS 6d006ec).
+            TurnResult(
+                assistant = CoachFallbacks.fallback(), trace = trace,
+                pendingActions = toolContext.pendingActions.toList(),
+                usage = tally, modelUsed = flags.model, providerUsed = flags.providerMode.rawValue,
+                error = CoachTurnError.from(e))
         }
     }
 
