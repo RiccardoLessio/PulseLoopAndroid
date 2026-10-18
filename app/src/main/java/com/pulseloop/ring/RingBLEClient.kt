@@ -208,6 +208,34 @@ class RingBLEClient(
     private var watchdogJob: Job? = null
     private var ownershipRetryJob: Job? = null
     @Volatile private var watchdogReconnectPaused = false
+    @Volatile private var teardownWaitJob: Job? = null
+    private var teardownWaitAddress: String? = null
+    @Volatile private var teardownScanAddress: String? = null
+    private val teardownWaitEpoch = java.util.concurrent.atomic.AtomicLong()
+
+    private val crpReconnect = CRPReconnect(
+        scope = scope,
+        canRetry = {
+            activeCoordinator?.deviceType == RingDeviceType.CRP &&
+                lastKnownIdentifier != null && !watchdogReconnectPaused &&
+                !prefs.getBoolean(USER_DISCONNECTED_KEY, false) &&
+                !synchronized(forgetLock) { forgetPending || forgetFinalizing } &&
+                bluetoothAdapter.isEnabled && hasPermissions() &&
+                reconnectAttempts < MAX_RECONNECT_ATTEMPTS &&
+                _state.value.connectionState !in setOf(
+                    RingConnectionState.CONNECTED, RingConnectionState.CONNECTING,
+                )
+        },
+        onPending = {
+            recordDiagnostic("CRP reconnect scheduled in 3000ms")
+            updateState { copy(connectionState = RingConnectionState.RECONNECTING) }
+            PulseEventBus.publishBlocking(
+                PulseEvent.DeviceStateChanged(RingConnectionState.RECONNECTING, lastKnownIdentifier)
+            )
+        },
+        onRetry = { connectLastKnownInternal() },
+        onAbandoned = { finishCrpRecovery() },
+    )
 
     // MARK: Service-discovery gate
     //
@@ -236,6 +264,13 @@ class RingBLEClient(
     }
 
     fun startScanning() {
+        // A pairing scan supersedes automatic recovery. Recovery's own scans use the private
+        // entry point so their pending presentation survives until the ring is found.
+        finishCrpRecovery()
+        startScanningInternal()
+    }
+
+    private fun startScanningInternal() {
         if (!hasPermissions()) {
             updateState { copy(lastError = "BLE permissions not granted") }
             return
@@ -249,7 +284,9 @@ class RingBLEClient(
         reconnectScanPending = false
         updateState {
             copy(
-                connectionState = RingConnectionState.SCANNING,
+                connectionState = if (crpReconnect.isRecovering || teardownScanAddress != null)
+                    RingConnectionState.RECONNECTING
+                    else RingConnectionState.SCANNING,
                 discovered = emptyList(),
                 lastError = null,
             )
@@ -263,9 +300,11 @@ class RingBLEClient(
     }
 
     fun stopScanning() {
+        finishCrpRecovery()
         reconnectScanPending = false
         scanner?.stopScan(scanCallback)
-        if (_state.value.connectionState == RingConnectionState.SCANNING) {
+        if (_state.value.connectionState in setOf(
+                RingConnectionState.SCANNING, RingConnectionState.RECONNECTING)) {
             updateState { copy(connectionState = RingConnectionState.IDLE) }
         }
     }
@@ -337,6 +376,9 @@ class RingBLEClient(
     }
 
     private fun connectLastKnownInternal() {
+        // A callback-driven CRP retry owns the next attempt until its timer fires.
+        if (crpReconnect.isPending) return
+        if (teardownWaitJob?.isActive == true) return
         if (!bluetoothAdapter.isEnabled) return
         // Honor a user-initiated Disconnect: stay off until the user reconnects ([userConnect])
         // or pairs a new ring ([connectTo]). Every auto-reconnect path — foreground
@@ -344,7 +386,10 @@ class RingBLEClient(
         // here, so this one guard makes "Disconnect" actually stick.
         if (prefs.getBoolean(USER_DISCONNECTED_KEY, false)) return
         val lastId = lastKnownIdentifier ?: return
-        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            if (crpReconnect.isRecovering || teardownScanAddress != null) finishCrpRecovery()
+            return
+        }
         // A still-pending reconnect scan means the last attempt never sighted the ring.
         if (reconnectScanPending) {
             reconnectScanPending = false
@@ -362,7 +407,7 @@ class RingBLEClient(
             bluetoothAdapter.getRemoteDevice(lastId)
         } catch (_: Exception) { null }
         if (device == null) {
-            startScanning()
+            startScanningInternal()
             return
         }
         if (reconnectAttempts % 3 == 1) {
@@ -373,14 +418,16 @@ class RingBLEClient(
                 advertisedName = try { device.name } catch (_: Exception) { null },
             )
         } else {
-            startScanning()
-            // Set AFTER startScanning (which clears it to protect pairing scans).
+            startScanningInternal()
+            // Set AFTER startScanningInternal (which clears it to protect pairing scans).
             reconnectScanPending = true
         }
     }
 
     /** Clear the reconnect throttling — called on user action and app foreground. */
     private fun resetReconnectBackoff() {
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         reconnectAttempts = 0
         sightlessScans = 0
         reconnectScanPending = false
@@ -395,6 +442,8 @@ class RingBLEClient(
     fun reconnectIfNeeded() {
         if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
         val lastId = lastKnownIdentifier ?: return
+        // Foregrounding must not restart an already scheduled recovery or abandon its scan.
+        if (crpReconnect.isRecovering || teardownWaitJob?.isActive == true || teardownScanAddress != null) return
         // Fresh user attention = fresh retry budget (the cap exists to stop unattended
         // background churn, not to block a user actively waiting on the connection).
         resetReconnectBackoff()
@@ -433,8 +482,15 @@ class RingBLEClient(
     }
 
     private fun connectionWatchdogTick() {
-        if (!bluetoothAdapter.isEnabled || !hasPermissions()) return
+        if (!bluetoothAdapter.isEnabled || !hasPermissions()) {
+            if (crpReconnect.isRecovering || teardownWaitJob != null || teardownScanAddress != null) {
+                finishCrpRecovery()
+            }
+            return
+        }
         if (watchdogReconnectPaused) return
+        if (crpReconnect.isPending) return
+        if (teardownWaitJob?.isActive == true) return
         // Time out a hung CONNECTING attempt FIRST — before the last-known-ring guard below —
         // so it also covers a first-ever pairing (no stored ring yet). The official QRing app
         // arms this timeout on every connect (mTimeoutRunnable). Without it, a first pair that
@@ -482,6 +538,11 @@ class RingBLEClient(
             RingConnectionState.DISCONNECTED,
             RingConnectionState.FAILED,
             RingConnectionState.IDLE -> connectLastKnownInternal()
+            RingConnectionState.RECONNECTING -> {
+                // The short timer handles failed attempts; this advances a recovery scan that
+                // found nothing for a whole watchdog interval, preserving the retry cap.
+                if (crpReconnect.isRecovering || teardownScanAddress != null) connectLastKnownInternal()
+            }
             // CONNECTING is handled above (before the last-known-ring guard).
             else -> {
                 // SCANNING: a pairing scan proceeds untouched, but a reconnect scan that
@@ -499,11 +560,13 @@ class RingBLEClient(
     }
 
     /**
-     * Abort a stalled connect attempt that has no stored ring to retry (a first pairing that
-     * hung). Tears the half-open GATT down and surfaces an error so the pairing UI leaves the
-     * "Connecting…" state instead of spinning forever.
+     * Abort an unusable connection setup and tear its half-open GATT down. A known CRP ring
+     * gets the vendor's delayed recovery even if no further disconnect callback arrives;
+     * first pairing and other families retain their existing failure behavior.
      */
     private fun failConnectAttempt(reason: String) {
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         val gatt = bluetoothGatt
         bluetoothGatt = null
         activeDriver?.connectionDidEnd()
@@ -511,8 +574,11 @@ class RingBLEClient(
         subscriptionGate = null
         resetOpQueue()
         if (gatt != null) {
-            try { gatt.disconnect() } catch (_: Exception) {}
-            closeGattQuietly(gatt)
+            if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
+            else {
+                try { gatt.disconnect() } catch (_: Exception) {}
+                closeGattQuietly(gatt)
+            }
         }
         releaseConnectionOwnership()
         connectingStartedAt = 0
@@ -520,6 +586,7 @@ class RingBLEClient(
         PulseEventBus.publishBlocking(
             PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
         )
+        scheduleCrpRecovery()
     }
 
     /**
@@ -534,6 +601,9 @@ class RingBLEClient(
         // Lifecycle/worker teardown is intentional. Leave genuine link-loss callbacks eligible
         // for watchdog recovery, but do not let this client undo an explicit transient teardown.
         watchdogReconnectPaused = true
+        crpReconnect.cancel()
+        cancelTeardownConnect()
+        reconnectScanPending = false
         ownershipRetryJob?.cancel(); ownershipRetryJob = null
         val shouldPublishDisconnect =
             _state.value.connectionState != RingConnectionState.DISCONNECTED
@@ -544,14 +614,16 @@ class RingBLEClient(
         activeDriver?.connectionDidEnd()
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         resetOpQueue()
-        if (gatt != null) {
+        if (gatt != null && activeCoordinator?.deviceType == RingDeviceType.CRP) {
+            disconnectCrpGatt(gatt)
+        } else if (gatt != null) {
             try { gatt.disconnect() } catch (_: Exception) {}
             // The official QRing app waits ~500 ms between disconnect() and close() so
             // the stack finishes the LL teardown before the client handle disappears.
             scope.launch {
                 delay(GATT_CLOSE_DELAY_MS)
                 closeGattQuietly(gatt)
-                releaseConnectionOwnership()
+                if (bluetoothGatt == null) releaseConnectionOwnership()
             }
         } else {
             releaseConnectionOwnership()
@@ -605,6 +677,67 @@ class RingBLEClient(
         try { gatt.close() } catch (_: Exception) {}
     }
 
+    private fun disconnectCrpGatt(gatt: BluetoothGatt) {
+        recordDiagnostic("CRP physical teardown started")
+        CRPTeardownMonitor.get(context).disconnect(gatt) {
+            closeGattQuietly(gatt)
+            recordDiagnostic("CRP previous GATT closed")
+            // A close for the old ring must not release a newer connection's ownership.
+            if (bluetoothGatt == null) releaseConnectionOwnership()
+        }
+    }
+
+    private fun cancelTeardownConnect() {
+        teardownWaitEpoch.incrementAndGet()
+        teardownWaitJob?.cancel()
+        teardownWaitJob = null
+        teardownWaitAddress = null
+        teardownScanAddress = null
+    }
+
+    private fun waitForCrpTeardown(
+        monitor: CRPTeardownMonitor,
+        target: BluetoothDevice,
+        deviceType: RingDeviceType?,
+        selectedModelID: String?,
+        advertisedName: String?,
+        scanDetectedType: RingDeviceType?,
+    ) {
+        if (teardownWaitJob?.isActive == true && teardownWaitAddress == target.address) return
+        cancelTeardownConnect()
+        crpReconnect.cancelPending()
+        val epoch = teardownWaitEpoch.get()
+        recordDiagnostic("CRP waiting for previous physical disconnect")
+        updateState { copy(connectionState = RingConnectionState.RECONNECTING) }
+        PulseEventBus.publishBlocking(
+            PulseEvent.DeviceStateChanged(RingConnectionState.RECONNECTING, target.address)
+        )
+        teardownWaitAddress = target.address
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val ready = monitor.gate.await(target.address)
+            if (epoch != teardownWaitEpoch.get()) return@launch
+            teardownWaitJob = null
+            teardownWaitAddress = null
+            if (watchdogReconnectPaused || prefs.getBoolean(USER_DISCONNECTED_KEY, false) ||
+                !bluetoothAdapter.isEnabled || !hasPermissions() ||
+                synchronized(forgetLock) { forgetPending || forgetFinalizing }) {
+                finishCrpRecovery()
+                return@launch
+            }
+            if (ready) {
+                recordDiagnostic("CRP teardown finished; resuming connection")
+                beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType)
+            } else {
+                recordDiagnostic("CRP teardown confirmation missing; requiring fresh advertisement")
+                teardownScanAddress = target.address
+                startScanningInternal()
+                reconnectScanPending = true
+            }
+        }
+        teardownWaitJob = job
+        job.start()
+    }
+
     /**
      * Explicit "Forget Ring" action. Mirrors the official app: send the ring-side
      * UNBOND (0x4B 05) and wait for the ring's UNBOND_ACK before tearing down, so
@@ -633,6 +766,8 @@ class RingBLEClient(
             forgetFinalizing = false
             forgetRequestGeneration = forgetGeneration
         }
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         // Clear the known-ring id up front so the watchdog/auto-reconnect can't grab
         // the ring back during or after the unbind window.
         prefs.edit()
@@ -779,6 +914,23 @@ class RingBLEClient(
     ) {
         if (watchdogReconnectPaused) return
         if (synchronized(forgetLock) { forgetPending || forgetFinalizing }) return
+        // A hard reconnect can also replace a still-live CRP handle. Start its physical
+        // teardown before checking the shared gate, rather than reopening against that link.
+        if (activeCoordinator?.deviceType == RingDeviceType.CRP) {
+            bluetoothGatt?.let { old ->
+                bluetoothGatt = null
+                activeDriver?.connectionDidEnd()
+                resetOpQueue()
+                disconnectCrpGatt(old)
+            }
+        }
+        val teardownMonitor = CRPTeardownMonitor.current()
+        if (teardownMonitor?.gate?.isPending(target.address) == true) {
+            waitForCrpTeardown(teardownMonitor, target, deviceType, selectedModelID,
+                advertisedName, scanDetectedType)
+            return
+        }
+        cancelTeardownConnect()
         if (!claimConnectionOwnership()) {
             Log.i("RingBLEClient", "Connection skipped: another PulseLoop BLE client owns GATT")
             updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
@@ -792,6 +944,7 @@ class RingBLEClient(
             }
             return
         }
+        crpReconnect.cancelPending()
         ownershipRetryJob = null
         scanner?.stopScan(scanCallback)
         // Close any stale GATT from a previous (now-dead) connection before opening a new
@@ -1304,16 +1457,21 @@ class RingBLEClient(
             val matchedModel = com.pulseloop.wearables.WearableModel.modelForAdvertisedName(name)
             discoveredPeripherals[device.address] = device
 
+            val teardownScan = device.address == teardownScanAddress
+            if (teardownScan && CRPTeardownMonitor.current()?.gate
+                    ?.freshAdvertisement(device.address, result.timestampNanos) == false) return
+
             // Reconnect scan: the known ring is advertising again — grab it now.
-            if (reconnectScanPending && device.address == lastKnownIdentifier) {
+            if (reconnectScanPending && (teardownScan || device.address == lastKnownIdentifier)) {
+                teardownScanAddress = null
                 reconnectScanPending = false
                 sightlessScans = 0
                 scanner?.stopScan(this)
                 connectingName = name
                 beginConnect(
                     device,
-                    matchedType ?: lastKnownDeviceType,
-                    selectedModelID = lastKnownWearableModelID,
+                    matchedType ?: lastKnownDeviceType ?: activeCoordinator?.deviceType,
+                    selectedModelID = lastKnownWearableModelID ?: _state.value.activeWearableModelID,
                     advertisedName = name,
                     scanDetectedType = matchedType,
                 )
@@ -1403,6 +1561,13 @@ class RingBLEClient(
             recordDiagnostic("services status=$status count=${gatt.services.size}")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 failConnectAttempt("Service discovery failed (GATT $status)")
+                return
+            }
+            // A manual disconnect/reconnect can reuse an Android link whose ATT channel is
+            // already gone. The October 17 capture returns GATT_SUCCESS with an empty cache in
+            // both reproductions. This is failed discovery, not proof that the ring lacks fdd3.
+            if (gatt.services.isEmpty() && activeCoordinator?.deviceType == RingDeviceType.CRP) {
+                failConnectAttempt("Ring service discovery returned no services")
                 return
             }
 
@@ -1868,14 +2033,8 @@ class RingBLEClient(
         // Ignore late callbacks from a GATT we already superseded during a reconnect
         // (we close the old handle in beginConnect). Acting on them would clobber the
         // CONNECTING state of the fresh attempt with a spurious DISCONNECTED.
-        if (bluetoothGatt != null && gatt !== bluetoothGatt) {
-            closeGattQuietly(gatt)
-            return
-        }
-        // Duplicate callback for a GATT we already tore down (bluetoothGatt is null
-        // after teardown): don't re-publish DISCONNECTED or re-close.
-        if (bluetoothGatt == null &&
-            _state.value.connectionState == RingConnectionState.DISCONNECTED) {
+        if (gatt !== bluetoothGatt) {
+            if (bluetoothGatt != null) closeGattQuietly(gatt)
             return
         }
         resetOpQueue()
@@ -1885,8 +2044,8 @@ class RingBLEClient(
         // Release the dead client immediately (the link is already down, so no
         // disconnect/delay needed): refresh the GATT cache and close, matching the
         // official QRing app's teardown. Holding the old handle for autoConnect is
-        // what left zombie clients in the stack — the watchdog now owns reconnection
-        // and always starts from a fresh connectGatt.
+        // what left zombie clients in the stack — both CRP's short retry and the watchdog
+        // start from a fresh connectGatt.
         bluetoothGatt = null
         writeChar = null; commandChar = null; notifyChars.clear(); batteryChar = null
         subscriptionGate = null
@@ -1908,20 +2067,46 @@ class RingBLEClient(
                 },
             )
         }
+        scheduleCrpRecovery()
+    }
+
+    private fun scheduleCrpRecovery() {
+        if (!crpReconnect.schedule() && crpReconnect.isRecovering && !crpReconnect.isPending) {
+            finishCrpRecovery()
+        }
+    }
+
+    private fun finishCrpRecovery() {
+        crpReconnect.cancel()
+        cancelTeardownConnect()
+        if (reconnectScanPending) scanner?.stopScan(scanCallback)
+        reconnectScanPending = false
+        if (_state.value.connectionState == RingConnectionState.RECONNECTING) {
+            updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
+            PulseEventBus.publishBlocking(
+                PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
+            )
+        }
     }
 
     /** Tear down this client. Returns true only if it owned PulseLoop's process-wide GATT slot. */
     fun destroy(): Boolean {
+        watchdogReconnectPaused = true
+        crpReconnect.cancel()
+        cancelTeardownConnect()
         watchdogJob?.cancel()
         ownershipRetryJob?.cancel(); ownershipRetryJob = null
         stopKeepalive()
         scanner?.stopScan(scanCallback)
         activeDriver?.connectionDidEnd()
-        // The scope is about to die, so the graceful delayed close in disconnect()
-        // would never run — tear the GATT down synchronously instead.
+        // The client scope is about to die. CRP close lives in the shared process monitor so
+        // a foreground client can wait for it; other families still close synchronously here.
         bluetoothGatt?.let { gatt ->
-            try { gatt.disconnect() } catch (_: Exception) {}
-            closeGattQuietly(gatt)
+            if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
+            else {
+                try { gatt.disconnect() } catch (_: Exception) {}
+                closeGattQuietly(gatt)
+            }
         }
         bluetoothGatt = null
         val releasedConnection = releaseConnectionOwnership()

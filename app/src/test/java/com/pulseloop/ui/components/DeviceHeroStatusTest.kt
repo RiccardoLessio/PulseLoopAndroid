@@ -93,4 +93,15 @@ class DeviceHeroStatusTest {
             assertEquals(false, s.actionEnabled)
         }
     }
+
+    @Test
+    fun `automatic recovery tells the user it is still reconnecting`() {
+        val status = DeviceHeroStatus.make(
+            state = RingConnectionState.RECONNECTING, connectedName = null,
+            knownName = "Colmi R11", batteryPercent = null, lastSyncAt = null, now = now,
+        )
+        assertEquals("Reconnecting…", status.statusLine)
+        assertEquals(DeviceHeroStatus.Action.PENDING, status.action)
+        assertEquals(false, status.actionEnabled)
+    }
 }

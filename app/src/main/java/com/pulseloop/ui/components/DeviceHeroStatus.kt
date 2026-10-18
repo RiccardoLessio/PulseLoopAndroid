@@ -60,8 +60,11 @@ data class DeviceHeroStatus(
                 RingConnectionState.CONNECTED -> {
                     statusLine = "Connected"; statusTint = PulseColors.success
                 }
-                RingConnectionState.CONNECTING, RingConnectionState.RECONNECTING -> {
+                RingConnectionState.CONNECTING -> {
                     statusLine = "Connecting…"; statusTint = PulseColors.warning
+                }
+                RingConnectionState.RECONNECTING -> {
+                    statusLine = "Reconnecting…"; statusTint = PulseColors.warning
                 }
                 RingConnectionState.SCANNING -> {
                     statusLine = "Searching…"; statusTint = PulseColors.warning
