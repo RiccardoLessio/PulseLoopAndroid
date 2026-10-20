@@ -165,6 +165,11 @@ fun VitalsScreen(
                         referenceBands = c.referenceBands, dashedRules = c.dashedRules,
                         showPoints = true,
                     )
+                    // Issue #103: the card's ESTIMATED chip says *that*; this says what, and that a
+                    // spot reading is still a measurement.
+                    if (state.spo2IsEstimated) {
+                        Text(ESTIMATED_SPO2_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 } else {
                     Text("No SpO₂ samples yet — take a reading to start your trend.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -1159,18 +1164,27 @@ private fun zoneRangeText(
     }
 }
 
+/** Issue #103: the SpO₂ card's footnote, shared with the detail disclaimer so they never drift. */
+private const val ESTIMATED_SPO2_NOTE =
+    "Hourly readings are estimated from heart rate — this ring's hourly SpO₂ isn't a separate " +
+    "measurement. Spot readings you take are measured."
+
 /**
  * Warning-card copy for estimated metrics (iOS `disclaimerText`); null hides the card.
  *
  * [isDerived] is the issue #67 case: a stress chart computed from HRV because the ring reports no
  * stress at all. It gets the card for the same reason BP and glucose do — the number on screen is
- * an inference, and the user is entitled to know that without leaving the chart.
+ * an inference, and the user is entitled to know that without leaving the chart. For SpO₂ it is
+ * issue #103: hourly readings this ring computes from heart rate rather than measures.
  */
 private fun metricDisclaimer(metric: String, isDerived: Boolean): String? = when {
     metric == "stress" && isDerived ->
         "Estimated from HRV — your ring doesn't measure stress. Scored against your own recent " +
         "HRV readings, so it says how this reading compares with your normal, not how you compare " +
         "with anyone else."
+    metric == "spo2" && isDerived ->
+        "$ESTIMATED_SPO2_NOTE On this ring the same heart rate always comes with the same hourly " +
+        "SpO₂, so a night-time dip here follows a low sleeping heart rate rather than measuring oxygen."
     metric == "glucose" ->
         "Estimated wellness metric — not for dosing or diabetes decisions. No smart ring or watch is " +
         "FDA-authorized to measure or estimate glucose on its own."
