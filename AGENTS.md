@@ -946,7 +946,8 @@ things to preserve:
 - **The hypnogram draws the counted gaps** (`hypnogramBlocks`), display-only. Never feed those
   blocks to `awakeMinutes`, which counts the gaps itself.
 - **An hour-plus gap inside the wearer's Bedtime window stays one night** (`SleepGapBridge`). Off
-  unless quiet hours are on; Bedtime windows decide when the night has any, else the clock window.
+  unless the schedule or Bedtime tracking is on — the two are independent since #126; Bedtime
+  windows decide when the night has any, else the clock window if the schedule is on.
   The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
   record delete would split a night the next sync merges back.
 

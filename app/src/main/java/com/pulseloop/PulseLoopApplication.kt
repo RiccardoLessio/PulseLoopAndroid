@@ -26,6 +26,9 @@ class PulseLoopApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLogger.install(this)
+        // Before any sync can read them: Bedtime tracking no longer needs the schedule (issue #126),
+        // so a Bedtime flag left on under a switched-off schedule is cleared rather than reread.
+        QuietHoursPrefs.migrateIndependentBedtime(this)
         // Application-scoped so capture runs whether or not the Debug screen is open.
         DiagnosticsSubscriber(PulseLoopDatabase.getInstance(this)).start(appScope)
         // One-time cleanup of activity totals corrupted by the old bucket handling; runs off the
