@@ -199,7 +199,7 @@ fun PulseLoopApp() {
                 // process restart — the live GATT is gone, so the views would otherwise show a
                 // false "Connected". Reset until a real connection re-confirms it.
                 db.deviceDao().current()?.let { dev ->
-                    if (dev.stateRaw == "CONNECTED" || dev.stateRaw == "CONNECTING") {
+                    if (dev.stateRaw in setOf("CONNECTED", "CONNECTING", "RECONNECTING")) {
                         db.deviceDao().upsert(dev.copy(stateRaw = "DISCONNECTED", updatedAt = System.currentTimeMillis()))
                     }
                 }

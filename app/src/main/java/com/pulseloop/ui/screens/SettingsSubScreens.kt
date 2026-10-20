@@ -1940,9 +1940,18 @@ fun WearableSettingsScreen(
                         Spacer(Modifier.width(4.dp))
                         Text("Disconnect")
                     }
-                } else if (bleClient?.hasLastKnownRing == true &&
-                    bleState.connectionState != RingConnectionState.RECONNECTING
-                ) {
+                } else if (bleState.connectionState == RingConnectionState.RECONNECTING) {
+                    // Automatic recovery can scan for minutes; let the user stop it (issue #124).
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = { bleClient?.userDisconnect() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Filled.Close, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Disconnect")
+                    }
+                } else if (bleClient?.hasLastKnownRing == true) {
                     Spacer(Modifier.height(12.dp))
                     OutlinedButton(
                         onClick = { bleClient.userConnect() },

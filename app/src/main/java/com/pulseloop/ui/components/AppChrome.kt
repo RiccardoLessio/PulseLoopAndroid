@@ -98,7 +98,8 @@ fun ConnectionStatusPill(
     val label = when (state) {
         RingConnectionState.CONNECTED ->
             if (batteryPercent != null && batteryPercent > 0) "Connected · $batteryPercent%" else "Connected"
-        RingConnectionState.CONNECTING, RingConnectionState.RECONNECTING -> "Connecting…"
+        RingConnectionState.CONNECTING -> "Connecting…"
+        RingConnectionState.RECONNECTING -> "Reconnecting…"
         RingConnectionState.FAILED -> "Sync failed"
         else -> "Disconnected"
     }
