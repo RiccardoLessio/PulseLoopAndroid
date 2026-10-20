@@ -39,6 +39,17 @@ internal class CRPTeardownGate(
         }
     }
 
+    /**
+     * The OS already reported no physical link when this teardown began (a watchdog or hung
+     * CONNECTING reconnect), so no ACL_DISCONNECTED broadcast will follow. Only the GATT close
+     * remains to wait for. A stale ticket cannot release a newer teardown.
+     */
+    fun linkAlreadyDown(ticket: Ticket) = synchronized(lock) {
+        if (pending[ticket.address] !== ticket) return@synchronized
+        ticket.disconnected = true
+        finishIfReady(ticket)
+    }
+
     fun bluetoothOff() = synchronized(lock) {
         pending.values.toList().forEach {
             it.disconnected = true

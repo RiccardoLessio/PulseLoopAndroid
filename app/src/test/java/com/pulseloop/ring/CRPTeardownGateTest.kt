@@ -46,6 +46,34 @@ class CRPTeardownGateTest {
     }
 
     @Test
+    fun `a link already down waits only for the GATT close, not a broadcast`() = runTest {
+        // Watchdog / hung-CONNECTING reconnect: the OS reports no GATT link, so no
+        // ACL_DISCONNECTED will arrive. Must not fall through to the 5 s timeout and scan.
+        val gate = CRPTeardownGate({ testScheduler.currentTime * 1_000_000 })
+        val old = gate.begin(ring)
+        gate.linkAlreadyDown(old)
+        val connect = async { gate.await(ring) }
+        runCurrent()
+        assertFalse("the old handle must still close first", connect.isCompleted)
+        advanceTimeBy(500)
+        gate.gattClosed(old)
+        runCurrent()
+        assertTrue(connect.await())
+        assertEquals(500L, testScheduler.currentTime)
+        assertFalse(gate.isPending(ring))
+    }
+
+    @Test
+    fun `a stale link-down probe cannot release a newer teardown`() = runTest {
+        val gate = CRPTeardownGate({ testScheduler.currentTime * 1_000_000 })
+        val stale = gate.begin(ring)
+        val current = gate.begin(ring)
+        gate.linkAlreadyDown(stale)
+        gate.gattClosed(current)
+        assertTrue(gate.isPending(ring))
+    }
+
+    @Test
     fun `reconnecting after completed teardown adds no delay`() = runTest {
         val gate = CRPTeardownGate({ testScheduler.currentTime * 1_000_000 })
         val old = gate.begin(ring)

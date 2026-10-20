@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -27,6 +29,8 @@ import kotlinx.coroutines.launch
 internal class CRPTeardownMonitor private constructor(context: Context) {
     val gate = CRPTeardownGate(SystemClock::elapsedRealtimeNanos)
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val bluetoothManager: BluetoothManager? =
+        context.applicationContext.getSystemService(BluetoothManager::class.java)
 
     init {
         val receiver = object : BroadcastReceiver() {
@@ -72,12 +76,26 @@ internal class CRPTeardownMonitor private constructor(context: Context) {
 
     /** Register the wait before disconnecting, and close even if the owning client's scope dies. */
     fun disconnect(gatt: BluetoothGatt, close: () -> Unit) {
+        // Open the ticket before probing so a broadcast racing the probe is still recorded.
         val ticket = gate.begin(gatt.device.address)
+        if (!linkPhysicallyUp(gatt.device)) {
+            Log.i("RingBLEClient", "CRP link already down; waiting only for GATT close")
+            gate.linkAlreadyDown(ticket)
+        }
         try { gatt.disconnect() } catch (_: Exception) {}
         scope.launch {
             delay(500L)
             try { close() } finally { gate.gattClosed(ticket) }
         }
+    }
+
+    /** Unknown (no manager, missing permission) counts as up: wait for the broadcast. */
+    private fun linkPhysicallyUp(device: BluetoothDevice): Boolean = try {
+        bluetoothManager?.getConnectionState(device, BluetoothProfile.GATT)
+            ?.let { it == BluetoothProfile.STATE_CONNECTED || it == BluetoothProfile.STATE_DISCONNECTING }
+            ?: true
+    } catch (_: Exception) {
+        true
     }
 
     companion object {
