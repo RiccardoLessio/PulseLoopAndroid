@@ -10,10 +10,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,12 +40,10 @@ internal class CRPTeardownMonitor private constructor(context: Context) {
                         // Older Android releases may omit EXTRA_TRANSPORT. CRP rings are LE-only.
                         if (intent.getIntExtra(BluetoothDevice.EXTRA_TRANSPORT,
                                 BluetoothDevice.TRANSPORT_LE) != BluetoothDevice.TRANSPORT_LE) return
-                        val device = if (Build.VERSION.SDK_INT >= 33) {
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                        } ?: return
+                        // IntentCompat gates the typed overload on API 34: it is buggy on 33.
+                        val device = IntentCompat.getParcelableExtra(
+                            intent, BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java,
+                        ) ?: return
                         if (gate.isPending(device.address)) {
                             Log.i("RingBLEClient", "CRP physical disconnect confirmed")
                             gate.aclDisconnected(device.address)
