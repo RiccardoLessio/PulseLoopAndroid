@@ -213,6 +213,15 @@ class RingBLEClient(
     @Volatile private var teardownScanAddress: String? = null
     /** The queued teardown wait/scan came from an explicit pairing [connectTo], not recovery. */
     @Volatile private var teardownUserInitiated = false
+    /** The caller's connect parameters, carried through a teardown fallback scan so a pairing
+     *  that honoured the carousel over a generic "SMART_RING" match (#29) is not rescanned as
+     *  JRING. Null when no fallback scan is pending. */
+    private data class TeardownConnect(
+        val deviceType: RingDeviceType?,
+        val selectedModelID: String?,
+        val scanDetectedType: RingDeviceType?,
+    )
+    @Volatile private var teardownScanConnect: TeardownConnect? = null
     private val teardownWaitEpoch = java.util.concurrent.atomic.AtomicLong()
 
     private val crpReconnect = CRPReconnect(
@@ -703,6 +712,7 @@ class RingBLEClient(
         teardownWaitAddress = null
         teardownScanAddress = null
         teardownUserInitiated = false
+        teardownScanConnect = null
     }
 
     /**
@@ -726,11 +736,15 @@ class RingBLEClient(
         if (teardownWaitJob?.isActive == true && teardownWaitAddress == target.address) return
         cancelTeardownConnect()
         crpReconnect.cancelPending()
+        teardownUserInitiated = userInitiated
         val epoch = teardownWaitEpoch.get()
         recordDiagnostic("CRP waiting for previous physical disconnect")
-        updateState { copy(connectionState = RingConnectionState.RECONNECTING) }
+        // A fresh pairing is still "Connecting…" to the user; only recovery is "Reconnecting…".
+        val waitState = if (userInitiated) RingConnectionState.CONNECTING
+            else RingConnectionState.RECONNECTING
+        updateState { copy(connectionState = waitState) }
         PulseEventBus.publishBlocking(
-            PulseEvent.DeviceStateChanged(RingConnectionState.RECONNECTING, target.address)
+            PulseEvent.DeviceStateChanged(waitState, target.address)
         )
         teardownWaitAddress = target.address
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -753,6 +767,7 @@ class RingBLEClient(
                 recordDiagnostic("CRP teardown confirmation missing; requiring fresh advertisement")
                 teardownScanAddress = target.address
                 teardownUserInitiated = userInitiated
+                teardownScanConnect = TeardownConnect(deviceType, selectedModelID, scanDetectedType)
                 startScanningInternal()
                 reconnectScanPending = true
             }
@@ -1495,12 +1510,27 @@ class RingBLEClient(
             // Reconnect scan: the known ring is advertising again — grab it now.
             if (reconnectScanPending && (teardownScan || device.address == lastKnownIdentifier)) {
                 val userInitiated = teardownScan && teardownUserInitiated
+                val carried = if (teardownScan) teardownScanConnect else null
                 teardownScanAddress = null
                 teardownUserInitiated = false
+                teardownScanConnect = null
                 reconnectScanPending = false
                 sightlessScans = 0
                 scanner?.stopScan(this)
                 connectingName = name
+                if (carried != null) {
+                    // Resume exactly the attempt that hit the gate; a pairing must not pick up
+                    // the previously stored ring's family or model.
+                    beginConnect(
+                        device,
+                        carried.deviceType ?: matchedType,
+                        selectedModelID = carried.selectedModelID,
+                        advertisedName = name,
+                        scanDetectedType = carried.scanDetectedType ?: matchedType,
+                        userInitiated = userInitiated,
+                    )
+                    return
+                }
                 beginConnect(
                     device,
                     matchedType ?: lastKnownDeviceType ?: activeCoordinator?.deviceType,
@@ -2111,11 +2141,15 @@ class RingBLEClient(
     }
 
     private fun finishCrpRecovery() {
+        // A pairing that was waiting out a teardown shows CONNECTING with no GATT yet.
+        val pairingWait = teardownUserInitiated && bluetoothGatt == null
         crpReconnect.cancel()
         cancelTeardownConnect()
         if (reconnectScanPending) scanner?.stopScan(scanCallback)
         reconnectScanPending = false
-        if (_state.value.connectionState == RingConnectionState.RECONNECTING) {
+        val shown = _state.value.connectionState
+        if (shown == RingConnectionState.RECONNECTING ||
+            (pairingWait && shown == RingConnectionState.CONNECTING)) {
             updateState { copy(connectionState = RingConnectionState.DISCONNECTED) }
             PulseEventBus.publishBlocking(
                 PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
