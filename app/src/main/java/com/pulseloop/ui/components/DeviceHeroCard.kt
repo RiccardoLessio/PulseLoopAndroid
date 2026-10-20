@@ -151,8 +151,9 @@ fun DeviceHeroCard(
         }
 
         // The connected card is purely informational and opens Wearable settings, where
-        // Disconnect lives. Setup/reconnect remain available here only when not connected.
-        if (status.action != DeviceHeroStatus.Action.DISCONNECT) {
+        // Disconnect lives. Setup/reconnect remain available here only when not connected, and
+        // automatic recovery offers Disconnect so the user can stop it (issue #124).
+        if (!connected) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Text(
                     status.actionTitle,
@@ -167,12 +168,8 @@ fun DeviceHeroCard(
                             when (status.action) {
                                 DeviceHeroStatus.Action.CONNECT -> onConnect()
                                 DeviceHeroStatus.Action.SET_UP -> onSetUp()
-                                // Unreachable today: the row above only renders when action !=
-                                // DISCONNECT, and DeviceHeroStatus produces DISCONNECT only for
-                                // the connected state — so this is a tripwire, not a fix (the PR
-                                // description once claimed a dead button here; there never was
-                                // one). Exhaustiveness needs the branch, and if the render
-                                // condition is ever relaxed it must call through, not do nothing.
+                                // Reached while RECONNECTING: stops automatic recovery through
+                                // the same sticky userDisconnect path as the Settings button.
                                 DeviceHeroStatus.Action.DISCONNECT -> onDisconnect()
                                 // Already inert: actionEnabled is false while a connect is in flight.
                                 DeviceHeroStatus.Action.PENDING -> {}
