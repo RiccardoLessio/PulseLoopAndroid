@@ -211,6 +211,8 @@ class RingBLEClient(
     @Volatile private var teardownWaitJob: Job? = null
     private var teardownWaitAddress: String? = null
     @Volatile private var teardownScanAddress: String? = null
+    /** The queued teardown wait/scan came from an explicit pairing [connectTo], not recovery. */
+    @Volatile private var teardownUserInitiated = false
     private val teardownWaitEpoch = java.util.concurrent.atomic.AtomicLong()
 
     private val crpReconnect = CRPReconnect(
@@ -350,6 +352,7 @@ class RingBLEClient(
                 else discoveredRing?.wearableModelID ?: selectedModelID,
             advertisedName = discoveredRing?.name ?: target.name,
             scanDetectedType = detectedType,
+            userInitiated = true,
         )
     }
 
@@ -508,7 +511,13 @@ class RingBLEClient(
             }
             return
         }
-        if (lastKnownIdentifier == null) return
+        if (lastKnownIdentifier == null) {
+            // Another client forgot the ring: stop this client's recovery scan, but leave an
+            // explicit pairing that is waiting out a teardown alone.
+            if (crpReconnect.isRecovering ||
+                (teardownScanAddress != null && !teardownUserInitiated)) finishCrpRecovery()
+            return
+        }
         when (_state.value.connectionState) {
             RingConnectionState.CONNECTED -> {
                 if (activeCoordinator?.deviceType == RingDeviceType.JRING) {
@@ -693,7 +702,17 @@ class RingBLEClient(
         teardownWaitJob = null
         teardownWaitAddress = null
         teardownScanAddress = null
+        teardownUserInitiated = false
     }
+
+    /**
+     * Automatic recovery may only resume toward the ring that is still stored. Another client
+     * (the foreground one) can Forget while this one waits; its in-memory state is stale here,
+     * so re-read the shared prefs. An explicit pairing [connectTo] is exempt: its target is not
+     * stored until the connection succeeds.
+     */
+    private fun teardownTargetStillWanted(address: String, userInitiated: Boolean): Boolean =
+        userInitiated || address == lastKnownIdentifier
 
     private fun waitForCrpTeardown(
         monitor: CRPTeardownMonitor,
@@ -702,6 +721,7 @@ class RingBLEClient(
         selectedModelID: String?,
         advertisedName: String?,
         scanDetectedType: RingDeviceType?,
+        userInitiated: Boolean,
     ) {
         if (teardownWaitJob?.isActive == true && teardownWaitAddress == target.address) return
         cancelTeardownConnect()
@@ -720,16 +740,19 @@ class RingBLEClient(
             teardownWaitAddress = null
             if (watchdogReconnectPaused || prefs.getBoolean(USER_DISCONNECTED_KEY, false) ||
                 !bluetoothAdapter.isEnabled || !hasPermissions() ||
-                synchronized(forgetLock) { forgetPending || forgetFinalizing }) {
+                synchronized(forgetLock) { forgetPending || forgetFinalizing } ||
+                !teardownTargetStillWanted(target.address, userInitiated)) {
                 finishCrpRecovery()
                 return@launch
             }
             if (ready) {
                 recordDiagnostic("CRP teardown finished; resuming connection")
-                beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType)
+                beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType,
+                    userInitiated)
             } else {
                 recordDiagnostic("CRP teardown confirmation missing; requiring fresh advertisement")
                 teardownScanAddress = target.address
+                teardownUserInitiated = userInitiated
                 startScanningInternal()
                 reconnectScanPending = true
             }
@@ -911,6 +934,8 @@ class RingBLEClient(
          *  the attempt didn't come from a fresh scan match. [DriverReroute.shouldRerouteToJring]
          *  needs it to tell a generic-"SMART_RING" guess apart from a confident family match. */
         scanDetectedType: RingDeviceType? = null,
+        /** An explicit pairing [connectTo]; recovery must otherwise target the stored ring. */
+        userInitiated: Boolean = false,
     ) {
         if (watchdogReconnectPaused) return
         if (synchronized(forgetLock) { forgetPending || forgetFinalizing }) return
@@ -927,7 +952,7 @@ class RingBLEClient(
         val teardownMonitor = CRPTeardownMonitor.current()
         if (teardownMonitor?.gate?.isPending(target.address) == true) {
             waitForCrpTeardown(teardownMonitor, target, deviceType, selectedModelID,
-                advertisedName, scanDetectedType)
+                advertisedName, scanDetectedType, userInitiated)
             return
         }
         cancelTeardownConnect()
@@ -939,7 +964,8 @@ class RingBLEClient(
                 ownershipRetryJob = scope.launch {
                     delay(PROCESS_OWNER_RETRY_MS)
                     ownershipRetryJob = null
-                    beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType)
+                    beginConnect(target, deviceType, selectedModelID, advertisedName, scanDetectedType,
+                        userInitiated)
                 }
             }
             return
@@ -1458,12 +1484,19 @@ class RingBLEClient(
             discoveredPeripherals[device.address] = device
 
             val teardownScan = device.address == teardownScanAddress
+            if (teardownScan && !teardownTargetStillWanted(device.address, teardownUserInitiated)) {
+                // Forgotten (possibly by another client) while this recovery scan was running.
+                finishCrpRecovery()
+                return
+            }
             if (teardownScan && CRPTeardownMonitor.current()?.gate
                     ?.freshAdvertisement(device.address, result.timestampNanos) == false) return
 
             // Reconnect scan: the known ring is advertising again — grab it now.
             if (reconnectScanPending && (teardownScan || device.address == lastKnownIdentifier)) {
+                val userInitiated = teardownScan && teardownUserInitiated
                 teardownScanAddress = null
+                teardownUserInitiated = false
                 reconnectScanPending = false
                 sightlessScans = 0
                 scanner?.stopScan(this)
@@ -1474,6 +1507,7 @@ class RingBLEClient(
                     selectedModelID = lastKnownWearableModelID ?: _state.value.activeWearableModelID,
                     advertisedName = name,
                     scanDetectedType = matchedType,
+                    userInitiated = userInitiated,
                 )
                 return
             }
