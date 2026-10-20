@@ -44,7 +44,15 @@ enum class SpotVital(
  * Ported from [SleepStage] in PulseModels.swift.
  */
 enum class SleepStage {
-    LIGHT, DEEP, AWAKE, UNKNOWN, REM;
+    LIGHT, DEEP, AWAKE, UNKNOWN, REM,
+
+    /**
+     * Minutes the wearer added to a ring record by editing it over time the ring missed (issue
+     * #106). Asleep, but unstaged: counted in time asleep, left out of the stage breakdown and the
+     * score. No decoder ever produces it — only `editedRecordBlocks` (SleepRecordExtension.kt) does.
+     * Deliberately not [UNKNOWN], which is a stage byte the ring *did* record and we can't read.
+     */
+    ADDED;
 
     companion object {
         /**

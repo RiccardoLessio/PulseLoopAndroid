@@ -50,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
+import com.pulseloop.ring.SleepStage
+import androidx.compose.ui.graphics.drawscope.clipRect
 import com.pulseloop.service.SleepBar
 import com.pulseloop.service.SleepFormat
 import com.pulseloop.service.SleepInsights
@@ -482,6 +484,10 @@ private fun SleepHypnogram(
     val sorted = remember(blocks) {
         blocks.filter { it.durationMinutes > 0 && it.stageRaw != "UNKNOWN" }.sortedBy { it.startMinute }
     }
+    // Minutes the wearer added over time the ring missed (issue #106) have no lane — no stage was
+    // measured — so they are drawn as a hatched band across the asleep lanes instead of a step, and
+    // the step line simply doesn't connect into or out of them.
+    fun isAdded(stage: String) = stage == SleepStage.ADDED.name
     // The x axis is wall-clock time, so it is scaled by the session's SPAN, never by its duration.
     // Since issue #63 those are different numbers — `totalMinutes` is time asleep and excludes the
     // awake stretches and the gap between a split night's two records, so scaling by it would
@@ -529,7 +535,8 @@ private fun SleepHypnogram(
     }
 
     fun readoutText(block: SleepStageBlockEntity): String {
-        val stage = block.stageRaw.replaceFirstChar { it.uppercase() }
+        val stage = if (isAdded(block.stageRaw)) "Added by you"
+            else block.stageRaw.replaceFirstChar { it.uppercase() }
         val startTime = clockTime(startTs + block.startMinute * 60_000L)
         val endTime = clockTime(startTs + (block.startMinute + block.durationMinutes) * 60_000L)
         return "$stage · $startTime – $endTime"
@@ -598,10 +605,38 @@ private fun SleepHypnogram(
                 Canvas(Modifier.fillMaxSize()) {
                     if (sorted.isEmpty()) return@Canvas
 
+                    // Added-by-you bands first, under everything else (issue #106): muted fill and
+                    // diagonal hatching from the REM lane to the DEEP lane.
+                    sorted.filter { isAdded(it.stageRaw) }.forEach { block ->
+                        val startX = xForMinute(block.startMinute, size.width)
+                        val endX = xForMinute(block.startMinute + block.durationMinutes, size.width)
+                            .coerceAtLeast(startX + 1f)
+                        val top = size.height * (laneFrac["REM"] ?: 0.38f)
+                        val bottom = size.height * (laneFrac["DEEP"] ?: 0.85f)
+                        drawRect(
+                            color = ADDED_BAND_COLOR.copy(alpha = 0.14f),
+                            topLeft = Offset(startX, top),
+                            size = androidx.compose.ui.geometry.Size(endX - startX, bottom - top),
+                        )
+                        clipRect(left = startX, top = top, right = endX, bottom = bottom) {
+                            val step = 7.dp.toPx()
+                            var x = startX - (bottom - top)
+                            while (x < endX) {
+                                drawLine(
+                                    color = ADDED_BAND_COLOR.copy(alpha = 0.45f),
+                                    start = Offset(x, bottom), end = Offset(x + (bottom - top), top),
+                                    strokeWidth = 1.dp.toPx(),
+                                )
+                                x += step
+                            }
+                        }
+                    }
+
                     // Dashed vertical connectors between consecutive blocks.
                     for (i in 1 until sorted.size) {
                         val prev = sorted[i - 1]
                         val cur = sorted[i]
+                        if (isAdded(prev.stageRaw) || isAdded(cur.stageRaw)) continue
                         val cx = xForMinute(cur.startMinute, size.width)
                         drawLine(
                             color = Color(0xFFD2CDFF).copy(alpha = 0.46f),
@@ -613,7 +648,7 @@ private fun SleepHypnogram(
                         )
                     }
                     // Horizontal segment per block: soft halo underlay + solid line.
-                    sorted.forEach { block ->
+                    sorted.filterNot { isAdded(it.stageRaw) }.forEach { block ->
                         val y = laneY(block.stageRaw, size.height)
                         val startX = xForMinute(block.startMinute, size.width)
                         val endX = xForMinute(block.startMinute + block.durationMinutes, size.width)
@@ -710,8 +745,25 @@ private fun SleepHypnogram(
         ) {
             ticks.forEach { Text(it, fontSize = 10.sp, color = PulseColors.textMuted) }
         }
+        if (sorted.any { isAdded(it.stageRaw) }) {
+            Row(
+                Modifier.padding(start = plotInsets.x),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(Modifier.size(width = 10.dp, height = 6.dp).background(ADDED_BAND_COLOR.copy(alpha = 0.45f)))
+                Text(
+                    "Added by you · asleep, no stage measured",
+                    fontSize = 10.sp, color = PulseColors.textMuted,
+                )
+            }
+        }
     }
 }
+
+/** The hatched band for minutes the wearer added over time the ring missed (issue #106): a
+ *  neutral grey-violet, so it never reads as one of the four measured stage colours. */
+private val ADDED_BAND_COLOR = Color(0xFF9A97B5)
 
 /** Three side-by-side stage duration cards (SleepStageSummaryCardsView in Swift). */
 @Composable
@@ -1032,6 +1084,15 @@ private fun SleepRecordsCard(
                             fontSize = 12.sp,
                             color = PulseColors.textMuted,
                         )
+                        // Minutes the wearer added over time the ring missed (issue #106).
+                        if (run.addedMinutes > 0) {
+                            Text(
+                                "Includes ${SleepFormat.duration(run.addedMinutes)} added by you, " +
+                                    "not staged or scored",
+                                fontSize = 12.sp,
+                                color = PulseColors.textMuted,
+                            )
+                        }
                     }
                     // Edit start/end boundaries (issue #82).
                     IconButton(onClick = { editingRun = run }) {
@@ -1072,8 +1133,17 @@ private fun SleepRecordsCard(
     }
 
     editingRun?.let { run ->
+        val index = runs.indexOf(run)
         SleepRecordEditDialog(
             run = run,
+            limits = remember(run, runs, session.date) {
+                com.pulseloop.service.recordEditLimits(
+                    run = run,
+                    previous = runs.getOrNull(index - 1),
+                    next = runs.getOrNull(index + 1),
+                    wakingDay = session.date,
+                )
+            },
             onDismiss = { editingRun = null },
             onSave = { newStart, newEnd ->
                 editingRun = null
@@ -1123,6 +1193,7 @@ private fun SleepRecordsCard(
 @Composable
 private fun SleepRecordEditDialog(
     run: com.pulseloop.service.SleepRecordRun,
+    limits: com.pulseloop.service.RecordEditLimits,
     onDismiss: () -> Unit,
     onSave: (newStartAt: Long, newEndAt: Long) -> Unit,
 ) {
@@ -1130,9 +1201,8 @@ private fun SleepRecordEditDialog(
     var currentStart by remember { mutableStateOf(run.startAt) }
     var currentEnd by remember { mutableStateOf(run.endAt) }
     var pickingTime by remember { mutableStateOf<String?>(null) } // "start" or "end"
-    // Set when the last picked time fell outside the record and was pulled back to its edge, which
-    // otherwise looks like the edit didn't register (issue #106).
-    var pickedOutside by remember { mutableStateOf(false) }
+    // The limit the last pick ran past, named rather than silently snapped back to (issue #106).
+    var limitMessage by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1140,7 +1210,8 @@ private fun SleepRecordEditDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Adjust start or end time to trim this record. Stages outside the new range will be removed.",
+                    "Trim this record, or extend it over time the ring missed. Added time counts " +
+                        "as asleep but has no stage, so it stays out of the stage breakdown and score.",
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                     color = PulseColors.textMuted,
                 )
@@ -1161,13 +1232,8 @@ private fun SleepRecordEditDialog(
                         Text("End: ${SleepFormat.clockTime(currentEnd)}")
                     }
                 }
-                if (pickedOutside) {
-                    Text(
-                        "This record runs ${SleepFormat.clockTime(run.startAt)} – " +
-                            "${SleepFormat.clockTime(run.endAt)}. You can only shorten it.",
-                        color = PulseColors.danger,
-                        fontSize = 12.sp,
-                    )
+                limitMessage?.let {
+                    Text(it, color = PulseColors.danger, fontSize = 12.sp)
                 }
                 if (currentStart >= currentEnd) {
                     Text(
@@ -1206,13 +1272,21 @@ private fun SleepRecordEditDialog(
             text = { TimePicker(state = timeState) },
             confirmButton = {
                 TextButton(onClick = {
-                    val picked = resolveAdjustedTime(targetTs, run.startAt, run.endAt, timeState.hour, timeState.minute, zone)
-                    val resolved = picked.coerceIn(run.startAt, run.endAt)
-                    pickedOutside = isOutsideRecord(picked, run.startAt, run.endAt)
-                    if (which == "start") {
-                        currentStart = resolved
+                    // Resolve the date against the whole span the record may cover, so 11:30 PM
+                    // picked for a record starting 12:51 AM lands the evening before.
+                    val picked = resolveAdjustedTime(
+                        targetTs, limits.earliestStart, limits.latestEnd, timeState.hour, timeState.minute, zone,
+                    )
+                    val clamped = if (which == "start") {
+                        com.pulseloop.service.clampStartPick(picked, limits)
                     } else {
-                        currentEnd = resolved
+                        com.pulseloop.service.clampEndPick(picked, limits)
+                    }
+                    limitMessage = clamped.limit?.let { editLimitMessage(it, which == "start", clamped.at, limits) }
+                    if (which == "start") {
+                        currentStart = clamped.at
+                    } else {
+                        currentEnd = clamped.at
                     }
                     pickingTime = null
                 }) { Text("Done") }
@@ -1225,12 +1299,29 @@ private fun SleepRecordEditDialog(
 }
 
 /**
- * Whether a time picked in the edit dialog falls outside the record, by more than the seconds the
- * picker can't show: the record's own start and end carry seconds, so picking the minute shown on
- * the button must not count as outside (issue #106).
+ * The dialog's line for a pick that ran past [limit], naming the limit (issue #106). [at] is where
+ * the pick was held — the previous record's end, the earliest start the cap allows, and so on.
  */
-internal fun isOutsideRecord(picked: Long, recordStart: Long, recordEnd: Long): Boolean =
-    picked < recordStart - recordStart % 60_000L || picked >= recordEnd - recordEnd % 60_000L + 60_000L
+internal fun editLimitMessage(
+    limit: com.pulseloop.service.RecordEditLimit,
+    isStart: Boolean,
+    at: Long,
+    limits: com.pulseloop.service.RecordEditLimits,
+): String {
+    val time = SleepFormat.clockTime(at)
+    return when (limit) {
+        com.pulseloop.service.RecordEditLimit.PREVIOUS_RECORD -> "The previous record ends at $time."
+        com.pulseloop.service.RecordEditLimit.NEXT_RECORD -> "The next record starts at $time."
+        com.pulseloop.service.RecordEditLimit.OUTWARD_CAP ->
+            "A record can be extended by up to ${com.pulseloop.service.MAX_OUTWARD_EXTENSION_MINUTES / 60} " +
+                "hours, so ${if (isStart) "it can start at $time at the earliest" else "it can end at $time at the latest"}."
+        com.pulseloop.service.RecordEditLimit.NIGHT_BOUNDARY ->
+            "${if (isStart) "Starting" else "Ending"} past $time would move it into another night."
+        com.pulseloop.service.RecordEditLimit.RING_MINUTES ->
+            "Keep at least a minute of what the ring recorded " +
+                "(${SleepFormat.clockTime(limits.measuredStart)} – ${SleepFormat.clockTime(limits.measuredEnd)})."
+    }
+}
 
 /**
  * Resolves the epoch millis for an adjusted time within/near a sleep record [recordStart]..[recordEnd].

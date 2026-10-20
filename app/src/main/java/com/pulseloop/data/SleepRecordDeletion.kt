@@ -82,13 +82,18 @@ object SleepRecordDeletion {
     }
 
     /**
-     * Adjust the declared boundaries of the ring record whose blocks carry [recordStartAt] to
-     * [newStartAt]..[newEndAt] (issue #82).
+     * Move the bounds of the ring record whose blocks carry [recordStartAt] to
+     * [newStartAt]..[newEndAt] (issue #82) — shorter, longer, or one side each (issue #106).
      *
-     * Stages inside the new range stay; stages now outside it are removed and drop from session
-     * totals. The edit is recorded in [MeasurementDeletionDao] so it survives a re-sync.
+     * Stages outside the new range are removed and drop from session totals. Time inside it that
+     * the ring didn't measure becomes [SleepStage.ADDED] minutes: asleep, unstaged, unscored. The
+     * blocks come from [com.pulseloop.service.editedRecordBlocks], the function the import uses to
+     * re-apply the stored edit, so the next sync of the night writes back exactly these blocks.
      *
-     * Returns true when the record was successfully updated.
+     * The bounds are held to [com.pulseloop.service.recordEditLimits] (the dialog's limits: the
+     * neighbouring record, two hours outward, the night's turnover) and clear of records in the
+     * day's other sessions, which the dialog doesn't see. Returns false when nothing changed or the
+     * new range keeps none of the ring's own minutes.
      */
     suspend fun edit(
         db: PulseLoopDatabase,
@@ -115,37 +120,49 @@ object SleepRecordDeletion {
         val targetRecordStart = targets.first().recordStartAt.let { if (it > 0L) it else targets.first().startAt }
         val day = session.date
 
-        // Trim each target block to [newStartAt, newEndAt)
-        val survivingTargets = mutableListOf<SleepStageBlockEntity>()
-        for (b in targets) {
-            val bStart = b.startAt
-            val bEnd = b.startAt + b.durationMinutes * 60_000L
-            val keepStart = maxOf(bStart, newStartAt)
-            val keepEnd = minOf(bEnd, newEndAt)
+        val (start, end) = clampEdit(db, session, blocks, targets, newStartAt, newEndAt)
+        val edited = com.pulseloop.service.editedRecordBlocks(targets, targetRecordStart, start, end)
+            ?: return@withTransaction false
 
-            if (keepStart < keepEnd) {
-                val duration = ((keepEnd - keepStart) / 60_000L).toInt()
-                if (duration > 0) {
-                    survivingTargets.add(
-                        b.copy(
-                            startAt = keepStart,
-                            durationMinutes = duration,
-                        )
-                    )
-                }
-            }
-        }
-
-        // If trimming leaves no stages in this record, delete the record completely
-        if (survivingTargets.isEmpty()) {
-            return@withTransaction delete(db, sessionId, recordStartAt)
-        }
-
-        db.measurementDeletionDao().recordSleepEdit(day, targetRecordStart, newStartAt, newEndAt)
+        db.measurementDeletionDao().recordSleepEdit(day, targetRecordStart, start, end)
 
         val nonTargets = blocks - targets.toSet()
-        restateSession(db, session, nonTargets + survivingTargets, bridge)
+        restateSession(db, session, nonTargets + edited, bridge)
         true
+    }
+
+    /**
+     * [newStartAt]..[newEndAt] held to the limits the dialog applies, and clear of every block in
+     * the day's other sessions (issue #106). The dialog already clamps; this is the authority, so a
+     * stale dialog or another caller can't extend a record over a neighbour.
+     */
+    private suspend fun clampEdit(
+        db: PulseLoopDatabase,
+        session: SleepSessionEntity,
+        blocks: List<SleepStageBlockEntity>,
+        targets: List<SleepStageBlockEntity>,
+        newStartAt: Long,
+        newEndAt: Long,
+    ): Pair<Long, Long> {
+        val runs = com.pulseloop.service.sleepRecordRuns(blocks)
+        val first = targets.minOf { it.startAt }
+        val index = runs.indexOfFirst { run -> run.blocks.any { it.startAt == first } }
+        val run = runs.getOrNull(index) ?: com.pulseloop.service.sleepRecordRuns(targets).first()
+        val limits = com.pulseloop.service.recordEditLimits(
+            run = run,
+            previous = runs.getOrNull(index - 1).takeIf { index > 0 },
+            next = runs.getOrNull(index + 1).takeIf { index >= 0 },
+            wakingDay = session.date,
+        )
+        val start = newStartAt.coerceAtLeast(limits.earliestStart)
+        val end = newEndAt.coerceAtMost(limits.latestEnd)
+        val otherSessions = db.sleepSessionDao().ringAllByDay(session.date).filter { it.id != session.id }
+        val others = if (otherSessions.isEmpty()) emptyList()
+            else db.sleepStageBlockDao().forSessions(otherSessions.map { it.id })
+        val (nightStart, nightEnd) = com.pulseloop.service.nightWindow(session.date)
+        return com.pulseloop.service.clampEditToNeighbours(
+            start, end, limits.measuredStart, limits.measuredEnd, others, nightStart, nightEnd,
+        )
     }
 
     /** The next stamped record boundary after [after], or end-of-night — bounds the legacy fallback. */
@@ -188,6 +205,8 @@ object SleepRecordDeletion {
             val totalMin = com.pulseloop.service.asleepMinutes(row.blocks)
             val deepMin = row.blocks.filter { it.stageRaw == SleepStage.DEEP.name }
                 .sumOf { it.durationMinutes }
+            // Scored on the ring's own minutes, as `reconcileWakingDay` does (issue #106).
+            val measuredMin = com.pulseloop.service.measuredAsleepMinutes(row.blocks)
             // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
             db.sleepSessionDao().upsert(
                 session.copy(
@@ -195,7 +214,7 @@ object SleepRecordDeletion {
                     startAt = row.startAt,
                     endAt = row.endAt,
                     totalMinutes = totalMin,
-                    score = com.pulseloop.service.sleepStageScore(deepMin, totalMin),
+                    score = com.pulseloop.service.sleepStageScore(deepMin, measuredMin),
                     updatedAt = now,
                 ),
             )
