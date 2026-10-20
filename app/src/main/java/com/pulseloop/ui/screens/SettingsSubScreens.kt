@@ -763,6 +763,11 @@ fun CoachSettingsScreen(onBack: () -> Unit) {
                             Column(Modifier.weight(1f)) {
                                 Text("Web Search")
                                 Text("Uses additional tokens", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                // Free-tier Gemini keys can be refused Google Search grounding (HTTP 429)
+                                // while every other call works; the coach then answers without it (issue #123).
+                                if (providerMode == CoachProviderMode.USER_GEMINI_KEY) {
+                                    Text("Google Search grounding may need a paid Gemini plan — free-tier keys can be refused, and the coach then answers without web results.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                             Switch(checked = webSearch, onCheckedChange = {
                                 webSearch = it; keyStore.webSearchEnabled = it
