@@ -2,6 +2,7 @@ package com.pulseloop.service
 
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import com.pulseloop.ring.SleepStage
+import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.settings.ZenWindow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -147,9 +148,46 @@ class SleepGapsTest {
     }
 
     @Test
-    fun `nothing is bridged while quiet hours are off`() {
-        val bridge = SleepGapBridge.forWindows(false, listOf(bedtime), 22 * 60, 7 * 60, utc)
+    fun `nothing is bridged with neither the schedule nor Bedtime tracking on`() {
+        val bridge = SleepGapBridge.forWindows(false, null, 22 * 60, 7 * 60, utc)
         assertFalse(bridge.bridges(gapStart, gapEnd))
+    }
+
+    /** Bedtime tracking works without the schedule (issue #126), for bridging as for importing. */
+    @Test
+    fun `Bedtime only bridges a gap inside the Bedtime window`() {
+        val bridge = SleepGapBridge.forWindows(false, listOf(bedtime), 22 * 60, 7 * 60, utc)
+        assertTrue(bridge.bridges(gapStart, gapEnd))
+    }
+
+    /** No Bedtime that night and no schedule: the hour rule alone decides, as the import keeps all. */
+    @Test
+    fun `Bedtime only bridges nothing on a night without a Bedtime window`() {
+        val bridge = SleepGapBridge.forWindows(false, emptyList(), 22 * 60, 7 * 60, utc)
+        assertFalse(bridge.bridges(gapStart, gapEnd))                      // 22–07 would cover it
+    }
+
+    /**
+     * The bridge and the import gate pick the same source for each of the four settings (issue
+     * #126): a gap the bridge keeps inside the night is one the import keeps whole as a record.
+     */
+    @Test
+    fun `the bridge and the import gate agree on the source for every combination`() {
+        val gapMinutes = ((gapEnd - gapStart) / 60_000L).toInt()
+        // A gap inside Bedtime (00:25–08:06) but past a 22:00–06:00 schedule tells the sources apart.
+        val cases = listOf(
+            Triple(false, null, false),                                     // neither
+            Triple(true, null, false),                                      // schedule only: past 06:00
+            Triple(false, listOf(bedtime), true),                           // Bedtime only
+            Triple(true, listOf(bedtime), true),                            // both: Bedtime decides
+        )
+        for ((schedule, windows, bridged) in cases) {
+            val bridge = SleepGapBridge.forWindows(schedule, windows, 22 * 60, 6 * 60, utc)
+            assertEquals("schedule=$schedule windows=$windows", bridged, bridge.bridges(gapStart, gapEnd))
+            val kept = QuietHoursPrefs.resolveKeptMinutes(gapStart, gapMinutes, schedule, windows, 22 * 60, 6 * 60, utc)
+            val active = schedule || windows != null
+            assertEquals("schedule=$schedule windows=$windows", bridged, active && kept == 0 until gapMinutes)
+        }
     }
 
     @Test

@@ -181,4 +181,73 @@ class QuietHoursPrefsTest {
         val kept = QuietHoursPrefs.keptMinutesByWindows(sleepStart, 60, windows)
         assertEquals(null, kept)
     }
+
+    // ── #126: Bedtime tracking and the schedule are independent ─────────────
+
+    /** Oct 10–11 2026 UTC wall clock; the #126 night ran 23:40 → 08:10. */
+    private fun oct(day: Int, h: Int, m: Int): Long =
+        java.time.ZonedDateTime.of(2026, 10, day, h, m, 0, 0, utc).toInstant().toEpochMilli()
+
+    private val nightStart = oct(10, 23, 40)
+    private val nightMinutes = 510                                          // → 08:10
+    private val bedtime126 = listOf(ZenWindow(start = oct(11, 0, 10), end = oct(11, 7, 30)))
+
+    private fun resolve(
+        schedule: Boolean,
+        windows: List<ZenWindow>?,
+        ts: Long = nightStart,
+        minutes: Int = nightMinutes,
+    ) = QuietHoursPrefs.resolveKeptMinutes(ts, minutes, schedule, windows, 22 * 60, 7 * 60, utc)
+
+    @Test
+    fun `neither keeps the whole record`() {
+        assertEquals(0 until nightMinutes, resolve(schedule = false, windows = null))
+    }
+
+    @Test
+    fun `schedule only trims to the clock window as before`() {
+        assertEquals(0 until 440, resolve(schedule = true, windows = null))     // cut at 07:00
+    }
+
+    /** The #126 report: Bedtime forgotten, so the night has no window — keep all of it. */
+    @Test
+    fun `Bedtime only keeps a night without a Bedtime window whole`() {
+        assertEquals(0 until nightMinutes, resolve(schedule = false, windows = emptyList()))
+        // Windows from another night don't count for this one.
+        val lastWeek = listOf(ZenWindow(start = oct(4, 0, 10), end = oct(4, 7, 30)))
+        assertEquals(0 until nightMinutes, resolve(schedule = false, windows = lastWeek))
+    }
+
+    @Test
+    fun `Bedtime only trims to the Bedtime window when the night has one`() {
+        assertEquals(30 until 470, resolve(schedule = false, windows = bedtime126))  // 00:10–07:30
+    }
+
+    /** A DND meeting the next afternoon shares the waking day; it must not drop the night. */
+    @Test
+    fun `Bedtime only keeps a record that overlaps no window`() {
+        val meeting = listOf(ZenWindow(start = oct(11, 14, 0), end = oct(11, 14, 30)))
+        assertEquals(0 until nightMinutes, resolve(schedule = false, windows = meeting))
+    }
+
+    @Test
+    fun `both use the Bedtime window and fall back to the schedule`() {
+        assertEquals(30 until 470, resolve(schedule = true, windows = bedtime126))
+        assertEquals(0 until 440, resolve(schedule = true, windows = emptyList()))
+        // Unchanged from #83: a record outside every window falls back to the clock window.
+        val sofa = resolve(schedule = true, windows = bedtime126, ts = oct(10, 21, 0), minutes = 90)
+        assertEquals(60 until 90, sofa)                                       // 22:00–22:30
+    }
+
+    /**
+     * Bedtime on under a switched-off schedule meant "no trimming" before #126 (the row was hidden
+     * and the gate never read). The upgrade clears it so it does not start meaning "Bedtime only".
+     */
+    @Test
+    fun `the upgrade keeps Bedtime only where the schedule was on`() {
+        assertTrue(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = true, gateByZenMode = true))
+        assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = false, gateByZenMode = true))
+        assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = true, gateByZenMode = false))
+        assertFalse(QuietHoursPrefs.migratedGateByZenMode(scheduleEnabled = false, gateByZenMode = false))
+    }
 }

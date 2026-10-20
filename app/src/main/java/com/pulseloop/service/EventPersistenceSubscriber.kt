@@ -581,13 +581,12 @@ class EventPersistenceSubscriber(
         // judged by its start, because the ring often runs the sofa hour and the real night as one
         // record. Already-imported nights are untouched (this never deletes), and the gate is read
         // per record so a settings change takes effect on the next packet, not the next launch.
-        val quiet = QuietHoursPrefs(context)
-        if (quiet.enabled) {
-            val kept = quiet.keptMinutesForRecord(effectiveTs, effectiveStages.size, context)
-                ?: return
-            effectiveTs = effectiveTs + kept.first * 60_000L
-            effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)
-        }
+        // The schedule and Bedtime tracking are independent (issue #126); with neither on this
+        // keeps the whole record.
+        val kept = QuietHoursPrefs(context).keptMinutesForRecord(effectiveTs, effectiveStages.size, context)
+            ?: return
+        effectiveTs = effectiveTs + kept.first * 60_000L
+        effectiveStages = effectiveStages.subList(kept.first, kept.last + 1)
 
         // Sleep record deletion gate: drop if the user deleted this entire record (issue #78, #82)
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(effectiveTs)

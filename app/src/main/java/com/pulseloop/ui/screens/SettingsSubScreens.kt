@@ -1656,9 +1656,10 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
 // MARK: - Wearable
 
 /**
- * The opt-in quiet-hours gate (issue #79): sleep the ring opens outside the window is ignored on
- * import. The rationale lives on [QuietHoursPrefs]; this is just the controls — a switch and the
- * two window ends, on the Wearable screen because it governs what a sync is allowed to store.
+ * The opt-in sleep trimming gate (issues #79, #83, #126): sleep the ring records outside the
+ * wearer's window is trimmed on import. The rationale lives on [QuietHoursPrefs]; this is just the
+ * controls — two independent switches (Bedtime/DND tracking, the clock schedule) and the schedule's
+ * two ends, on the Wearable screen because it governs what a sync is allowed to store.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1693,70 +1694,76 @@ private fun QuietHoursCard() {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
+            Text("Sleep trimming", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(
+                "A still wrist reads as sleep, so an evening on the sofa can run the night high. " +
+                    "Trimmed minutes are never imported — changing these later won't bring them back.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            // Independent of the schedule below (issue #126), so the Notification-access prompt
+            // has to work from here with the schedule off.
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Sleep quiet hours", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Switch(checked = enabled, onCheckedChange = { enabled = it; prefs.enabled = it })
-            }
-            Text(
-                "When on, sleep the ring records outside the window is trimmed off on import — a " +
-                    "still wrist reads as sleep, so an evening on the sofa can log a phantom session " +
-                    "and run the night high. Set the start to when you actually go to bed. Naps " +
-                    "outside the window are skipped too. Already-imported nights are never touched, " +
-                    "and what the gate skips while it is narrower stays skipped.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (enabled) {
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f).padding(end = 8.dp)) {
-                        Text(
-                            "Track Bedtime / DND mode",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        Text(
-                            "Automatically align quiet hours with Android's Bedtime or Do Not Disturb mode.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = gateByZenMode,
-                        onCheckedChange = { desired ->
-                            if (desired) {
-                                ZenModeListener.setEnabled(context, true)
-                                if (ZenModeListener.isAccessGranted(context)) {
-                                    gateByZenMode = true
-                                    prefs.gateByZenMode = true
-                                } else {
-                                    showPermissionDialog = true
-                                }
-                            } else {
-                                gateByZenMode = false
-                                prefs.gateByZenMode = false
-                                ZenModeListener.setEnabled(context, false)
-                            }
-                        },
+                Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        "Track Bedtime / DND mode",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Keep only sleep inside Android's Bedtime or Do Not Disturb. " +
+                            if (enabled) "Nights without it use the schedule." else "Nights without it are kept whole.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    if (gateByZenMode) "Fallback schedule (used when no Bedtime/DND mode was active):"
-                    else "Quiet hours schedule:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Switch(
+                    checked = gateByZenMode,
+                    onCheckedChange = { desired ->
+                        if (desired) {
+                            ZenModeListener.setEnabled(context, true)
+                            if (ZenModeListener.isAccessGranted(context)) {
+                                gateByZenMode = true
+                                prefs.gateByZenMode = true
+                            } else {
+                                showPermissionDialog = true
+                            }
+                        } else {
+                            gateByZenMode = false
+                            prefs.gateByZenMode = false
+                            ZenModeListener.setEnabled(context, false)
+                        }
+                    },
                 )
-                Spacer(Modifier.height(4.dp))
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text(
+                        "Sleep quiet hours",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        if (gateByZenMode) "Daily schedule for nights without Bedtime/DND."
+                        else "Keep only sleep inside a daily schedule. Naps outside it are skipped.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = { enabled = it; prefs.enabled = it })
+            }
+            if (enabled) {
+                Spacer(Modifier.height(8.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(onClick = { picking = "start" }, modifier = Modifier.weight(1f)) {
                         Text("From ${formatMinutesOfDay(start)}")
