@@ -174,6 +174,8 @@ object VitalsCardFactory {
         /** Fallback latest values when the 24h window is empty but a reading exists (iOS TodaySummary). */
         val latestHr: Double? = null,
         val latestSpo2: Double? = null,
+        /** The SpO₂ series includes hourly readings computed from heart rate (issue #103). */
+        val spo2Estimated: Boolean = false,
         /** Resting/peak HR estimates for the HR subtitle (iOS TodaySummary fields). */
         val restingHr: Double? = null,
         val peakHr: Double? = null,
@@ -246,7 +248,7 @@ object VitalsCardFactory {
             referenceBands = listOf(ReferenceBand(95.0, 100.0, VitalColorToken.Cyan)),
             dashedRules = listOf(92.0),
             trend = TrendSummary.compute(samples, MetricKind.SPO2, unitLabel = "%"),
-            sourceQuality = quality, isEstimated = false, confidenceLabel = null,
+            sourceQuality = quality, isEstimated = inputs.spo2Estimated, confidenceLabel = null,
             lastUpdatedText = lastUpdated(samples.lastOrNull()?.timestampMs, inputs.nowMs),
             isEmpty = samples.size < 2,
         )

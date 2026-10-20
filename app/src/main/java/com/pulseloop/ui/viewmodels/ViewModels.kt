@@ -12,6 +12,7 @@ import com.pulseloop.ring.*
 import com.pulseloop.coach.summaries.CoachSummaryKind
 import com.pulseloop.service.DailyCalorieEstimator
 import com.pulseloop.service.DerivedStress
+import com.pulseloop.service.EstimatedSpo2
 import com.pulseloop.service.HeartRateZones
 import com.pulseloop.service.SleepCoach
 import com.pulseloop.service.SleepInsights
@@ -613,6 +614,9 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
     data class VitalsState(
         val hrSamples: List<Double> = emptyList(),
         val spo2Samples: List<Double> = emptyList(),
+        /** The 24 h SpO₂ series holds hourly readings this ring computed from heart rate rather than
+         *  measured (issue #103). Never shown unlabelled. Spot readings never set it. */
+        val spo2IsEstimated: Boolean = false,
         val hrvSamples: List<Double> = emptyList(),
         val stressSamples: List<Double> = emptyList(),
         /** The stress series came from HRV, not from the ring (issue #67). Never shown unlabelled. */
@@ -761,9 +765,16 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val derivedStressSeries = derived.map { (i, score) -> VitalSample(hrv[i].timestamp, score.toDouble()) }
         val derivedStress = derivedStressSeries.map { it.value }
 
+        // Issue #103: a ring whose hourly SpO₂ is a fixed function of its heart rate presents that
+        // as a measurement unless we say otherwise. Judged from this ring's own history (not its
+        // family), and only hourly composite rows qualify — a spot reading is a real measurement.
+        val spo2Estimated = if (spo2.isEmpty()) emptySet()
+            else EstimatedSpo2.estimatedTimestamps(db.measurementDao(), twentyFourHoursAgo, now, now)
+
         return VitalsState(
             hrSamples = hr.map { it.value },
             spo2Samples = spo2.map { it.value },
+            spo2IsEstimated = spo2.any { it.timestamp in spo2Estimated },
             hrvSamples = hrv.map { it.value },
             stressSamples = stress.map { it.value }.ifEmpty { derivedStress },
             stressIsDerived = stress.isEmpty() && derivedStress.isNotEmpty(),
@@ -860,6 +871,7 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
         glucose = glucoseSeries,
         latestHr = latestHr?.toDouble(),
         latestSpo2 = latestSpo2?.toDouble(),
+        spo2Estimated = spo2IsEstimated,
         restingHr = restingHr,
         peakHr = peakHr,
         unitSystem = units,
@@ -1114,7 +1126,8 @@ class VitalDetailViewModel(
          *  (issue #60). Demo/seeded rows are included: a user clearing seeded noise out of a
          *  chart is the same gesture as removing a bad measurement. */
         val readings: List<Reading> = emptyList(),
-        /** This chart is derived rather than measured (issue #67) — carried so the screen says so.
+        /** This chart is derived rather than measured (issue #67; hourly SpO₂ computed from heart
+         *  rate, issue #103) — carried so the screen says so.
          *  A derived figure shown as a measurement would be worse than the empty chart it replaces,
          *  which is why it travels with the data instead of being re-inferred at the display layer. */
         val isDerived: Boolean = false,
@@ -1322,6 +1335,10 @@ class VitalDetailViewModel(
             // has never returned a stress reading at all, never blended with hardware values.
             val derived = if (kind == MeasurementKind.STRESS && samples.isEmpty() && !dao.hasReal(kindName))
                 derivedStressIn(windowStart, windowEnd) else emptyList()
+            // Issue #103: the hourly SpO₂ the card labels as estimated is charted here too, so the
+            // chart carries the same disclaimer. Only hourly rows count; spot readings never do.
+            val estimatedSpo2 = if (kind == MeasurementKind.SPO2 && samples.isNotEmpty())
+                EstimatedSpo2.estimatedTimestamps(dao, windowStart, windowEnd) else emptySet()
             val times = if (derived.isNotEmpty()) derived.map { it.timestampMs } else samples.map { it.timestamp }
             val points = if (derived.isNotEmpty()) derived.map { it.value } else samples.map { convert(it.value) }
             val labels = buildLabels(times, period)
@@ -1378,7 +1395,7 @@ class VitalDetailViewModel(
                 resting = resting,
                 trend = trend,
                 engineZones = engineZones,
-                isDerived = derived.isNotEmpty(),
+                isDerived = derived.isNotEmpty() || samples.any { it.timestamp in estimatedSpo2 },
                 loading = false,
             ) }
         }

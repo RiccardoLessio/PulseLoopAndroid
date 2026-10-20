@@ -12,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pulseloop.service.MetricKind
@@ -264,6 +265,13 @@ private fun ChartTile(card: VitalCardState, values: List<Double>, modifier: Modi
                     modifier = Modifier.padding(bottom = 4.dp),
                 )
             }
+        }
+        // Issue #103: hourly SpO₂ computed from heart rate is labelled on every surface it reaches.
+        if (card.isEstimated) {
+            Text(
+                "Estimated from heart rate", fontSize = 11.sp, color = ZonePalette.ZoneAmber,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
         }
         Spacer(Modifier.weight(1f))
         if (card.isEmpty) {
