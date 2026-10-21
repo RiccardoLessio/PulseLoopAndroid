@@ -141,6 +141,9 @@ fun PulseLoopApp() {
                     com.pulseloop.coach.attachments.CoachAttachmentStore.payloads(context, refs)
                 },
                 environmentSnapshot = { weatherContextService.snapshot() },
+                deleteAttachments = { refs ->
+                    refs.forEach { com.pulseloop.coach.attachments.CoachAttachmentStore.delete(context, it) }
+                },
             )
         }
 
@@ -391,10 +394,24 @@ fun PulseLoopApp() {
                             // frosted glass bar the other tabs use so the chat scrolls under it
                             // (owner choice, issue #22).
                             var showCoachUsage by remember { mutableStateOf(false) }
+                            var showCoachHistory by remember { mutableStateOf(false) }
                             CoachHeader(
                                 onNewChat = { coachVM.newConversation() },
                                 onOpenUsage = { showCoachUsage = true },
+                                onOpenHistory = { showCoachHistory = true },
                             )
+                            if (showCoachHistory) {
+                                val history by coachVM.history.collectAsState(initial = emptyList())
+                                val coachState by coachVM.state.collectAsState()
+                                com.pulseloop.ui.screens.CoachHistorySheet(
+                                    conversations = history,
+                                    currentId = coachState.conversationId,
+                                    onOpen = { id -> coachVM.openConversation(id); showCoachHistory = false },
+                                    onDelete = { id -> coachVM.deleteConversation(id) },
+                                    onDeleteAll = { coachVM.deleteAllConversations(); showCoachHistory = false },
+                                    onDismiss = { showCoachHistory = false },
+                                )
+                            }
                             if (showCoachUsage) {
                                 var usageData by remember {
                                     mutableStateOf<Pair<com.pulseloop.data.entity.CoachConversationEntity, List<com.pulseloop.data.entity.CoachMessageEntity>>?>(null)
