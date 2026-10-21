@@ -80,6 +80,10 @@ class AppServices private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: AppServices(context.applicationContext).also { instance = it }
             }
+
+        /** The services if the UI already built them, without building them: a background worker
+         *  must not create the app's ring client, whose watchdog would start reconnecting. */
+        fun peek(): AppServices? = instance
     }
 }
 
