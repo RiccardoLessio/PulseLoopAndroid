@@ -70,11 +70,13 @@ import com.pulseloop.service.GlucoseUnit
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.RingSyncCoordinator
 import com.pulseloop.service.RingSyncWorker
+import com.pulseloop.service.ScheduledSpo2Worker
 import com.pulseloop.service.VitalColorToken
 import com.pulseloop.service.VitalSample
 import com.pulseloop.service.ZoneSeverity
 import com.pulseloop.settings.ApiKeyStore
 import com.pulseloop.settings.QuietHoursPrefs
+import com.pulseloop.settings.ScheduledSpo2Prefs
 import com.pulseloop.settings.UnitSystem
 import com.pulseloop.settings.ZenModeListener
 import com.pulseloop.ui.components.DeviceHeroStatus
@@ -1518,6 +1520,9 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     var cfgStress by remember { mutableStateOf(true) }
     var cfgHrv by remember { mutableStateOf(true) }
     var cfgTemp by remember { mutableStateOf(true) }
+    val scheduledSpo2Prefs = remember { ScheduledSpo2Prefs(context) }
+    val supportsScheduledSpo2 = ScheduledSpo2Prefs.isSupported(device)
+    var cfgAppSpo2 by remember { mutableStateOf(false) }
     var cfgLoaded by remember { mutableStateOf(false) }
     var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
 
@@ -1534,6 +1539,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgStress = (config?.stressEnabled ?: true) && supportsStressSetting
         cfgHrv = (config?.hrvEnabled ?: true) && WearableCapability.HRV in capabilities
         cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
+        cfgAppSpo2 = scheduledSpo2Prefs.enabled
         cfgLoaded = true
     }
 
@@ -1606,6 +1612,16 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 steps = spo2IntervalSteps,
                             )
                         }
+                        // Issue #103: this ring's own SpO₂ is computed from heart rate, so the app
+                        // can run the ring's real spot measurement on the interval instead.
+                        if (cfgSpo2 && supportsScheduledSpo2) {
+                            VitalToggle("Measure SpO₂ from the app", cfgAppSpo2) { cfgAppSpo2 = it }
+                            Text(
+                                "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement halfway between the ring's readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     if (supportsStressSetting) {
                         VitalToggle("Stress", cfgStress) { cfgStress = it }
@@ -1637,6 +1653,8 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                     )
                                 )
                                 coordinator?.applyMeasurementSettings()
+                                scheduledSpo2Prefs.enabled = cfgAppSpo2 && cfgSpo2 && supportsScheduledSpo2
+                                ScheduledSpo2Worker.reschedule(context.applicationContext)
                                 cfgSavedMsg = if (coordinator?.isConnected == true)
                                     "Saved & sent to ring ✓" else "Saved — will sync on next connect"
                             }
