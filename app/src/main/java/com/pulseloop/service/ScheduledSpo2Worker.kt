@@ -23,8 +23,9 @@ import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 /**
- * Starts a real spot SpO₂ at each slot of the SpO₂ interval (issue #103), when the user opted in
- * ([ScheduledSpo2Prefs]).
+ * Starts a real spot SpO₂ on the app's own schedule (issue #103), when the user opted in
+ * ([ScheduledSpo2Prefs] — a cadence of its own, 60/120/180 min, independent of the ring's SpO₂
+ * interval).
  *
  * One-time work that enqueues the next slot as it finishes, rather than periodic work: a periodic
  * request can't be pinned to the half hour, and its 15-minute floor and flex would put runs on top
@@ -66,12 +67,13 @@ class ScheduledSpo2Worker(
                 wm.cancelUniqueWork(WORK_NAME)
                 return
             }
-            // A run re-checks the interval when it starts, so a change after this only moves one run.
-            val interval = withContext(Dispatchers.IO) {
+            // A run re-checks the intervals when it starts, so a change after this only moves one run.
+            val appInterval = ScheduledSpo2Prefs(context).intervalMinutes
+            val ringInterval = withContext(Dispatchers.IO) {
                 intervalMinutes(PulseLoopDatabase.getInstance(context))
             } ?: run { wm.cancelUniqueWork(WORK_NAME); return }
             val now = ZonedDateTime.now()
-            val delayMs = Duration.between(now, ScheduledSpo2Slots.nextSlot(now, interval)).toMillis()
+            val delayMs = Duration.between(now, ScheduledSpo2Slots.nextSlot(now, appInterval, ringInterval)).toMillis()
             val request = OneTimeWorkRequestBuilder<ScheduledSpo2Worker>()
                 .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
                 .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
@@ -79,7 +81,12 @@ class ScheduledSpo2Worker(
             wm.enqueueUniqueWork(WORK_NAME, policy, request)
         }
 
-        /** The SpO₂ interval the ring is set to, or null when its SpO₂ monitor is off or unset. */
+        /**
+     * The SpO₂ interval the ring is set to, or null when its SpO₂ monitor is off or unset. Never
+     * above 60: the heart-rate interval can now go to 120 (issue #103), but the blood-oxygen
+     * command keeps the old ceiling — 120 min is only evidenced on the heart-rate key — so the
+     * ring's SpO₂ grid, which the app's slots live between, is too.
+     */
         private suspend fun intervalMinutes(db: PulseLoopDatabase): Int? {
             val settings = loadPersistedMeasurementSettings(db) ?: return null
             if (!settings.spo2Enabled) return null
@@ -92,9 +99,9 @@ class ScheduledSpo2Worker(
         if (!ScheduledSpo2Prefs(applicationContext).enabled) return Result.success()
         val db = PulseLoopDatabase.getInstance(applicationContext)
         try {
-            val interval = intervalMinutes(db) ?: return Result.success()
+            val ringInterval = intervalMinutes(db) ?: return Result.success()
             if (!ScheduledSpo2Prefs.isSupported(db.deviceDao().currentReal())) return Result.success()
-            if (!ScheduledSpo2Slots.isClear(ZonedDateTime.now(), interval)) {
+            if (!ScheduledSpo2Slots.isClear(ZonedDateTime.now(), ringInterval)) {
                 Log.i(TAG, "Skipped: too close to the ring's own reading")
                 return Result.success()
             }

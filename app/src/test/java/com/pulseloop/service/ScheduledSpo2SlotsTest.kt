@@ -82,4 +82,36 @@ class ScheduledSpo2SlotsTest {
             }
         }
     }
+
+    @Test
+    fun `two hour app interval keeps the half past slot on an hourly ring grid`() {
+        // The app's own grid starts at :30 (half the ring's interval) and repeats every 2 h.
+        assertEquals(at(10, 30), ScheduledSpo2Slots.nextSlot(at(10, 0, 42), 120, 60))
+        assertEquals(at(12, 30), ScheduledSpo2Slots.nextSlot(at(10, 30), 120, 60))
+        assertEquals(at(0, 30, day = 22), ScheduledSpo2Slots.nextSlot(at(22, 31), 120, 60))
+    }
+
+    @Test
+    fun `three hour app interval slots every third hour`() {
+        assertEquals(at(12, 30), ScheduledSpo2Slots.nextSlot(at(10, 0, 42), 180, 60))
+        // 00:30 + 8 × 3 h wraps exactly onto 00:30, so the offset survives the rollover.
+        assertEquals(at(0, 30, day = 22), ScheduledSpo2Slots.nextSlot(at(23, 45), 180, 60))
+    }
+
+    @Test
+    fun `every 2 and 3 hour slot stays clear of an hourly ring grid`() {
+        for (appInterval in listOf(120, 180)) {
+            var t = at(0, 0)
+            repeat(40) {
+                t = ScheduledSpo2Slots.nextSlot(t, appInterval, 60)
+                assertTrue("app $appInterval slot $t", ScheduledSpo2Slots.isClear(t, 60))
+            }
+        }
+    }
+
+    @Test
+    fun `half hour ring grid puts the two hour slots at quarter past`() {
+        assertEquals(at(10, 15), ScheduledSpo2Slots.nextSlot(at(10, 5), 120, 30))
+        assertTrue(ScheduledSpo2Slots.isClear(at(10, 15), 30))
+    }
 }

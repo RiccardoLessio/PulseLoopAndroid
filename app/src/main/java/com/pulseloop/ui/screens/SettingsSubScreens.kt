@@ -1500,7 +1500,12 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val device = db.deviceDao().currentFlow().collectAsState(initial = null).value
     val capabilities = device?.capabilities.orEmpty()
     val minimumInterval = if (device?.deviceType == RingDeviceType.YCBT) 30 else 5
-    val intervalSteps = ((60 - minimumInterval) / 5 - 1).coerceAtLeast(0)
+    // 120 min is the only interval beyond the vendor app's own menu (which stops at 60) that is
+    // tested on hardware: the ring ACKed `01 0c 01 78` and read at 10:00 and 12:00 (issue #103,
+    // 2026-10-22). Nothing longer until someone tries it, and YCBT only — it is not the vendor
+    // app's behaviour, it is one ring's.
+    val maximumHrInterval = if (device?.deviceType == RingDeviceType.YCBT) 120 else 60
+    val intervalSteps = ((maximumHrInterval - minimumInterval) / 5 - 1).coerceAtLeast(0)
     // Only offered where the ring's protocol actually carries a separate blood-oxygen interval —
     // elsewhere the slider moved, the value saved, and "Saved & sent to ring ✓" appeared over a
     // setting nothing on the wire could express (issue #66).
@@ -1523,6 +1528,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val scheduledSpo2Prefs = remember { ScheduledSpo2Prefs(context) }
     val supportsScheduledSpo2 = ScheduledSpo2Prefs.isSupported(device)
     var cfgAppSpo2 by remember { mutableStateOf(false) }
+    var cfgAppSpo2Interval by remember { mutableStateOf(ScheduledSpo2Prefs.DEFAULT_INTERVAL_MINUTES) }
     var cfgLoaded by remember { mutableStateOf(false) }
     var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
 
@@ -1531,7 +1537,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgLoaded = false
         val config = db.deviceMeasurementConfigDao().byDevice(id)
         cfgHrEnabled = config?.hrEnabled ?: true
-        cfgHrInterval = (config?.hrIntervalMinutes ?: minimumInterval).coerceIn(minimumInterval, 60)
+        cfgHrInterval = (config?.hrIntervalMinutes ?: minimumInterval).coerceIn(minimumInterval, maximumHrInterval)
         cfgSpo2 = (config?.spo2Enabled ?: true) && WearableCapability.SPO2 in capabilities
         cfgSpo2Interval = (config?.spo2IntervalMinutes ?: 0).let {
             if (it <= 0) 0 else it.coerceIn(minimumInterval, 60)
@@ -1540,6 +1546,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgHrv = (config?.hrvEnabled ?: true) && WearableCapability.HRV in capabilities
         cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
         cfgAppSpo2 = scheduledSpo2Prefs.enabled
+        cfgAppSpo2Interval = scheduledSpo2Prefs.intervalMinutes
         cfgLoaded = true
     }
 
@@ -1580,8 +1587,8 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         Slider(
                             enabled = cfgLoaded,
                             value = cfgHrInterval.toFloat(),
-                            onValueChange = { cfgHrInterval = ((it / 5).toInt() * 5).coerceIn(minimumInterval, 60); cfgSavedMsg = null },
-                            valueRange = minimumInterval.toFloat()..60f,
+                            onValueChange = { cfgHrInterval = ((it / 5).toInt() * 5).coerceIn(minimumInterval, maximumHrInterval); cfgSavedMsg = null },
+                            valueRange = minimumInterval.toFloat()..maximumHrInterval.toFloat(),
                             steps = intervalSteps,
                         )
                     }
@@ -1594,7 +1601,9 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         // running both monitors hourly that is most of the battery (issue #66).
                         if (cfgSpo2 && supportsSpo2Interval) {
                             Text(
-                                if (cfgSpo2Interval <= 0) "Same as heart rate" else "Every $cfgSpo2Interval min",
+                                // The blood-oxygen command keeps the 60-min ceiling whatever the
+                                // heart-rate slider shows (no evidence past 60 on that key).
+                                if (cfgSpo2Interval <= 0) "Same as heart rate, at most every 60 min" else "Every $cfgSpo2Interval min",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1617,9 +1626,27 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                         if (cfgSpo2 && supportsScheduledSpo2) {
                             VitalToggle("Measure SpO₂ from the app", cfgAppSpo2) { cfgAppSpo2 = it }
                             Text(
-                                "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement halfway between the ring's readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
+                                "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement on the schedule below, between the ring's own readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            // Independent of the ring's SpO₂ interval: the app starts these runs
+                            // itself, so the ring's limits don't apply (issue #103). Each run is
+                            // ~50 s of red LED, which is what 2–3 h spacing is for.
+                            Text(
+                                if (cfgAppSpo2Interval == 60) "Every hour" else "Every ${cfgAppSpo2Interval / 60} hours",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Slider(
+                                enabled = cfgLoaded,
+                                value = cfgAppSpo2Interval.toFloat(),
+                                onValueChange = {
+                                    cfgAppSpo2Interval = ScheduledSpo2Prefs.sanitizeIntervalMinutes(((it / 60).toInt() * 60).coerceIn(60, 180))
+                                    cfgSavedMsg = null
+                                },
+                                valueRange = 60f..180f,
+                                steps = 2,
                             )
                         }
                     }
@@ -1641,7 +1668,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 db.deviceMeasurementConfigDao().upsert(
                                     com.pulseloop.data.entity.DeviceMeasurementConfigEntity(
                                         deviceId = device.id,
-                                        hrIntervalMinutes = cfgHrInterval.coerceIn(minimumInterval, 60),
+                                        hrIntervalMinutes = cfgHrInterval.coerceIn(minimumInterval, maximumHrInterval),
                                         hrEnabled = cfgHrEnabled,
                                         spo2Enabled = cfgSpo2 && WearableCapability.SPO2 in capabilities,
                                         spo2IntervalMinutes = if (!supportsSpo2Interval || cfgSpo2Interval <= 0) 0
@@ -1654,6 +1681,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                 )
                                 coordinator?.applyMeasurementSettings()
                                 scheduledSpo2Prefs.enabled = cfgAppSpo2 && cfgSpo2 && supportsScheduledSpo2
+                                scheduledSpo2Prefs.intervalMinutes = cfgAppSpo2Interval
                                 ScheduledSpo2Worker.reschedule(context.applicationContext)
                                 cfgSavedMsg = if (coordinator?.isConnected == true)
                                     "Saved & sent to ring ✓" else "Saved — will sync on next connect"
