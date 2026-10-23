@@ -24,9 +24,30 @@ class ScheduledSpo2Prefs(context: Context) {
         get() = prefs.getBoolean(KEY_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_ENABLED, value).apply() }
 
+    /**
+     * How often the app starts its own spot SpO₂, in minutes — independent of the interval the
+     * ring reads SpO₂ on (issue #103: each app run holds the red LED and the link for ~50 s, so
+     * at 2–3 h the battery and the night-time flashes are both spared). The ring's own SpO₂
+     * monitor keeps its own setting; the slots stay between its readings either way.
+     */
+    var intervalMinutes: Int
+        get() = prefs.getInt(KEY_INTERVAL_MINUTES, DEFAULT_INTERVAL_MINUTES)
+        set(value) { prefs.edit().putInt(KEY_INTERVAL_MINUTES, sanitizeIntervalMinutes(value)).apply() }
+
     companion object {
         private const val PREFS_NAME = "scheduled_spo2"
         private const val KEY_ENABLED = "enabled"
+        private const val KEY_INTERVAL_MINUTES = "interval_minutes"
+
+        /** Options are 60/120/180; 60 is what the app ran at before a choice existed. */
+        const val DEFAULT_INTERVAL_MINUTES = 60
+        const val MIN_INTERVAL_MINUTES = 60
+        const val MAX_INTERVAL_MINUTES = 180
+
+        fun sanitizeIntervalMinutes(minutes: Int): Int {
+            val snapped = ((minutes + 30) / 60) * 60
+            return snapped.coerceIn(MIN_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES)
+        }
 
         /**
          * Rings this is offered for: a manual SpO₂ that ends with the ring's own `04 0e` verdict,

@@ -28,10 +28,21 @@ internal object ScheduledSpo2Slots {
      *  shorter interval so a 15-minute grid still has room. */
     fun marginSeconds(intervalMinutes: Int): Int = minOf(5 * 60, intervalMinutes * 60 / 4)
 
-    /** The first slot strictly after [now]. */
-    fun nextSlot(now: ZonedDateTime, intervalMinutes: Int): ZonedDateTime {
+    /**
+     * The first slot strictly after [now]. [intervalMinutes] is the app's own cadence;
+     * [ringIntervalMinutes] is the interval the ring reads SpO₂ on — slots start half of it past
+     * local midnight and repeat every [intervalMinutes]. At the ring's own cadence that is the
+     * midpoint between two of its readings; on a longer app interval (120/180 min) the grid keeps
+     * the same half-interval offset, which holds it clear of the ring's readings whenever the
+     * intervals divide evenly — and [isClear] skips any slot that lands close regardless.
+     */
+    fun nextSlot(
+        now: ZonedDateTime,
+        intervalMinutes: Int,
+        ringIntervalMinutes: Int = intervalMinutes,
+    ): ZonedDateTime {
         val interval = intervalMinutes * 60
-        val half = interval / 2
+        val half = ringIntervalMinutes * 60 / 2
         val secs = now.toLocalTime().toSecondOfDay()
         val k = if (secs < half) 0 else (secs - half) / interval + 1
         val slot = half + k * interval
