@@ -51,11 +51,16 @@ class ScheduledSpo2Prefs(context: Context) {
 
         /**
          * Rings this is offered for: a manual SpO₂ that ends with the ring's own `04 0e` verdict,
-         * so the run has a known end and the connection can be released right after it. Only the
-         * YCBT family signals that today (issue #59).
+         * so the run has a known end and the connection can be released right after it. The YCBT
+         * protocol families signal that today (issue #59) — `COLMI_SMART_HEALTH` included, which
+         * rides the same [com.pulseloop.ring.YCBTDriver] but is its own `RingDeviceType`, so the
+         * original `== YCBT` check hid both #103 controls from those rings (issue #103,
+         * Albabit's `colmi-smarthealth` unit, 2026-10-23).
          */
         fun isSupported(device: DeviceEntity?): Boolean =
-            device != null && device.deviceType == RingDeviceType.YCBT &&
-                WearableCapability.MANUAL_SPO2 in device.capabilities
+            device != null && device.deviceType in setOf(
+                RingDeviceType.YCBT,
+                RingDeviceType.COLMI_SMART_HEALTH,
+            ) && WearableCapability.MANUAL_SPO2 in device.capabilities
     }
 }
