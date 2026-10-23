@@ -951,6 +951,31 @@ things to preserve:
   The sync's reconcile and `SleepRecordDeletion`'s restate must segment with the same bridge, or a
   record delete would split a night the next sync merges back.
 
+## An extended record's added minutes are asleep but unstaged (issue #106)
+
+Editing (#82) can extend a record over time the ring missed, not only shorten it. The added minutes
+are stored as `SleepStage.ADDED` blocks — **not** `UNKNOWN`, which is a stage byte the ring did
+record and we can't read.
+
+- **In time asleep, out of everything that judges stages.** `asleepMinutes` already admits them (it
+  excludes only AWAKE). Every score or stage share uses `measuredAsleepMinutes` / drops `addedMinutes`:
+  `sleepStageScore` in `reconcileWakingDay` and `SleepRecordDeletion.restateSession`, and
+  `SleepScore.calculate`. Health Connect gets `STAGE_TYPE_SLEEPING`. The hypnogram draws them as a
+  hatched band, not a lane.
+- **They carry the ring record's `recordStartAt`**, so `sleepRecordRuns` keeps them in that record
+  and the covered gap stops counting as a between-record waking (#81) with no special case.
+- **One function maps a record through an edit**: `editedRecordBlocks` (`SleepRecordExtension.kt`).
+  `SleepRecordDeletion.edit` and the import's edit gate both call it, so a re-sync writes back the
+  edit's blocks with the same `startAt`s. It ignores existing ADDED blocks and re-derives them from
+  the bounds, and snaps the bounds inwards onto the record's own minute grid. Don't hand-build
+  ADDED blocks anywhere else.
+- **Limits** (`recordEditLimits`): back to the previous record's end, forward to the next record's
+  start, otherwise 2 h past the ring's own bounds, never across the 7 PM waking-day turnover, and a
+  record must keep one measured minute. At import, a stored extension is also clamped clear of any
+  other stored record, so the ring's measurement always beats an extension.
+- **Known divergence**: the edit path only sees stored blocks. Re-extending over minutes an earlier
+  edit trimmed off makes them ADDED until the next sync, which restores the ring's real stages there.
+
 ## Long-lived services belong to the process, not the composition (issue #113)
 
 **`RingBLEClient`, `RingSyncCoordinator`, `EventPersistenceSubscriber` and the other app-lifetime

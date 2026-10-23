@@ -521,6 +521,9 @@ object HealthConnectTypeMappings {
         SleepStage.REM.name -> SleepSessionRecord.STAGE_TYPE_REM
         SleepStage.AWAKE.name -> SleepSessionRecord.STAGE_TYPE_AWAKE
         SleepStage.UNKNOWN.name -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
+        // Minutes the wearer added over time the ring missed (issue #106): asleep, but no stage was
+        // measured, so the generic asleep type rather than any specific stage.
+        SleepStage.ADDED.name -> SleepSessionRecord.STAGE_TYPE_SLEEPING
         else -> SleepSessionRecord.STAGE_TYPE_UNKNOWN
     }
 

@@ -75,7 +75,13 @@ object SleepScore {
         // label awake at all" heuristic are judged against it, since both are about time in bed —
         // and judged against asleep time the coverage test below would be true for every ring,
         // handing a ring that never labels awake the full awake sub-score for nothing.
-        val total = if (session.totalMinutes > 0) session.totalMinutes.toDouble() else 0.0
+        //
+        // Minutes the wearer added over time the ring missed (issue #106) are asleep but carry no
+        // stage, so the score judges the night the ring measured: they leave `total` (they would
+        // dilute every stage share) and the coverage test, and stay in `span`, which held them as a
+        // between-record gap before the edit and still does.
+        val added = addedMinutes(blocks)
+        val total = if (session.totalMinutes > 0) (session.totalMinutes - added).coerceAtLeast(0).toDouble() else 0.0
         val span = session.spanMinutes.toDouble().takeIf { it > 0 } ?: total
         // stageRaw is persisted as the SleepStage enum name (uppercase) — match it exactly.
         // Some rings report REM in big-data sleep; the score model has no REM band, so fold
@@ -85,7 +91,8 @@ object SleepScore {
         val deep = minutesFor(SleepStage.DEEP, SleepStage.REM)
         val light = minutesFor(SleepStage.LIGHT)
         val awake = minutesFor(SleepStage.AWAKE)
-        val coveredStageMin = blocks.sumOf { it.durationMinutes.toDouble() }
+        val coveredStageMin = blocks.filterNot { it.stageRaw == SleepStage.ADDED.name }
+            .sumOf { it.durationMinutes.toDouble() }
         val hasAwakeSignal = blocks.any { it.stageRaw == SleepStage.AWAKE.name } ||
             awake > 0 || (span > 0 && coveredStageMin >= span * 0.95)
 
@@ -140,6 +147,22 @@ fun asleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
     blocks.filter { it.stageRaw != SleepStage.AWAKE.name }
         .sumOf { it.durationMinutes }
         .coerceAtLeast(0)
+
+/**
+ * Minutes the wearer added to a record over time the ring missed (issue #106) — asleep, unstaged.
+ * They are inside [asleepMinutes] (the AWAKE-exclusion rule already admits them) and outside
+ * everything that judges stages: subtract them wherever a stage share or score is computed.
+ */
+fun addedMinutes(blocks: List<SleepStageBlockEntity>): Int =
+    blocks.filter { it.stageRaw == SleepStage.ADDED.name }.sumOf { it.durationMinutes }
+
+/**
+ * The asleep minutes the ring itself measured: [asleepMinutes] less [addedMinutes]. The
+ * denominator for [sleepStageScore], so a night the wearer extended scores exactly as the ring's
+ * own record would have (issue #106).
+ */
+fun measuredAsleepMinutes(blocks: List<SleepStageBlockEntity>): Int =
+    (asleepMinutes(blocks) - addedMinutes(blocks)).coerceAtLeast(0)
 
 /**
  * Awake minutes for a session, including the short gaps between its ring records (issue #81).
@@ -222,7 +245,8 @@ fun hypnogramBlocks(blocks: List<SleepStageBlockEntity>): List<SleepStageBlockEn
  * The banded stage score stored on a session row — deep-percentage bands, nothing else. The one
  * source of truth for it: `EventPersistenceSubscriber` stamps it on every reconcile, and
  * `SleepRecordDeletion` restates with the same function so a post-deletion row agrees with what
- * the next sync would write (issue #78).
+ * the next sync would write (issue #78). [totalMin] is the ring-measured asleep time
+ * ([measuredAsleepMinutes]): minutes the wearer added are unstaged and must not dilute it (#106).
  */
 fun sleepStageScore(deepMin: Int, totalMin: Int): Int? {
     if (totalMin == 0) return null
@@ -263,6 +287,13 @@ data class SleepRecordRun(
 ) {
     val recordStartAt: Long get() = blocks.firstOrNull { it.recordStartAt > 0L }?.recordStartAt ?: startAt
     val asleepMinutes: Int get() = asleepMinutes(blocks)
+    /** Minutes the wearer added over time the ring missed (issue #106); part of [asleepMinutes]. */
+    val addedMinutes: Int get() = addedMinutes(blocks)
+    private val measured get() = blocks.filterNot { it.stageRaw == SleepStage.ADDED.name }
+    /** Where the ring's own recording starts and ends inside this run, without the added minutes —
+     *  the bounds an extension is measured from (issue #106). The run's own when nothing is measured. */
+    val measuredStartAt: Long get() = measured.minOfOrNull { it.startAt } ?: startAt
+    val measuredEndAt: Long get() = measured.maxOfOrNull { it.startAt + it.durationMinutes * 60_000L } ?: endAt
     val spanMinutes: Int get() = ((endAt - startAt) / 60_000L).toInt().coerceAtLeast(0)
 }
 

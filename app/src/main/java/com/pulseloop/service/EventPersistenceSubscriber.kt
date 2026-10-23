@@ -597,21 +597,15 @@ class EventPersistenceSubscriber(
             return
         }
 
-        // Sleep record edit gate (issue #82): adjust boundaries if user edited this record
+        // Sleep record edit gate (issue #82, #106): the user's bounds for this record, re-applied
+        // inside the transaction below — trimming *and* re-creating any minutes they added over
+        // time the ring missed, through the same function the edit itself used.
         val edit = db.measurementDeletionDao().getSleepEdit(dayStart, ts)
             ?: db.measurementDeletionDao().getSleepEdit(origDayStart, ts)
-        if (edit != null) {
-            val recEnd = effectiveTs + effectiveStages.size * 60_000L
-            val trimmedStart = maxOf(effectiveTs, edit.newStartAt)
-            val trimmedEnd = minOf(recEnd, edit.newEndAt)
-            if (trimmedStart >= trimmedEnd) return
-            val startIndex = ((trimmedStart - effectiveTs) / 60_000L).toInt()
-            val endIndex = ((trimmedEnd - effectiveTs) / 60_000L).toInt()
-            effectiveTs = trimmedStart
-            effectiveStages = effectiveStages.subList(startIndex, endIndex)
-        }
 
-        db.withTransaction { upsertSleepSessionAtomic(effectiveTs, effectiveStages, completeSession, originalRecordStart = ts) }
+        db.withTransaction {
+            upsertSleepSessionAtomic(effectiveTs, effectiveStages, completeSession, originalRecordStart = ts, edit = edit)
+        }
     }
 
     private suspend fun upsertSleepSessionAtomic(
@@ -619,20 +613,39 @@ class EventPersistenceSubscriber(
         stages: List<SleepStage>,
         completeSession: Boolean,
         originalRecordStart: Long = ts,
+        edit: com.pulseloop.data.dao.SleepRecordEditBounds? = null,
     ) {
         // Group packets by the waking-day boundary (sleep from 7 PM rolls to the next morning) so
         // a night that starts before midnight lands under the morning of waking instead of being
         // split into two sessions at midnight. Matches the iOS reference
         // (PulseEventBus.persistSleepTimeline + Calendar.wakingDay(forSleepStart:)).
         val dayStart = com.pulseloop.util.TimeUtil.wakingDayLocal(ts)
-        val packetEnd = ts + stages.size * 60_000L
+        val ringEnd = ts + stages.size * 60_000L
         // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
         // re-points their surviving blocks to the correct waking day.
-        val overlapping = db.sleepSessionDao().ringOverlapping(ts, packetEnd)
+        val overlapping = db.sleepSessionDao().ringOverlapping(ts, ringEnd)
         val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
         val existingBlocks =
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
+
+        var recordBlocks = buildStageBlocks("", ts, stages, recordStartAt = originalRecordStart)
+        if (edit != null) {
+            // Re-apply the user's edit (issue #82, #106) with `editedRecordBlocks`, the function
+            // `SleepRecordDeletion.edit` used, so this sync reproduces the edit's blocks — the same
+            // `startAt`s, so tombstones and the restate stay idempotent. Added minutes give way to
+            // any other record already stored: the ring's measurement beats an extension.
+            val (nightStart, nightEnd) = nightWindow(dayStart)
+            val (start, end) = clampEditToNeighbours(
+                edit.newStartAt, edit.newEndAt, ts, ringEnd,
+                others = existingBlocks.filter { it.recordStartAt != originalRecordStart },
+                nightStart = nightStart, nightEnd = nightEnd,
+            )
+            recordBlocks = editedRecordBlocks(recordBlocks, originalRecordStart, start, end) ?: return
+        }
+        // The interval this packet is authoritative for: the record as edited, added minutes and all.
+        val packetStart = recordBlocks.minOf { it.startAt }
+        val packetEnd = recordBlocks.maxOf { it.startAt + it.durationMinutes * 60_000L }
 
         // YCBT complete records are authoritative for the ring session they describe, including
         // shortened revisions. Packet-based families replace only the packet interval. In both
@@ -640,7 +653,7 @@ class EventPersistenceSubscriber(
         // separate naps — and, for a complete record, the *other* ring sessions of the same night
         // (issue #63): see [completeSessionSurvivors] for why "the session it describes" is a
         // contiguous run of blocks and not every block of every row the packet touches.
-        val replacements = buildStageBlocks("", ts, stages, recordStartAt = originalRecordStart)
+        val replacements = recordBlocks
             // Tombstone check (issue #78): a deleted ring record's blocks come back with the same
             // `startAt` values on every re-send of that night, so the re-derive must drop them
             // here or `SleepRecordDeletion`'s work lasts exactly one sync.
@@ -651,12 +664,12 @@ class EventPersistenceSubscriber(
             }
         val dayBlocks = replaceOverlappingSleepBlocks(
             existing = if (completeSession) {
-                completeSessionSurvivors(existingBlocks, ts, packetEnd)
+                completeSessionSurvivors(existingBlocks, packetStart, packetEnd)
             } else {
                 existingBlocks
             },
             replacements = replacements,
-            replacementStart = ts,
+            replacementStart = packetStart,
             replacementEnd = packetEnd,
         )
 
@@ -736,7 +749,8 @@ class EventPersistenceSubscriber(
             val deepMin = seg.blocks
                 .filter { it.stageRaw == SleepStage.DEEP.name }
                 .sumOf { it.durationMinutes }
-            val score = computeSleepScore(deepMin, totalMin)
+            // Scored on the minutes the ring measured: added ones are asleep but unstaged (#106).
+            val score = computeSleepScore(deepMin, measuredAsleepMinutes(seg.blocks))
 
             // Parent session BEFORE its blocks (FK sleep_stage_blocks -> sleep_sessions.id).
             db.sleepSessionDao().upsert(
@@ -766,61 +780,6 @@ class EventPersistenceSubscriber(
 
         // Rows not matched to any segment had all their blocks re-pointed away — delete them.
         available.forEach { db.sleepSessionDao().deleteById(it.id) }
-    }
-
-    /**
-     * Build SleepStageBlockEntity entries with run-length encoding.
-     * Consecutive minutes of the same stage are merged into one block.
-     *
-     * Every block carries [startTs] as its `recordStartAt` — the declared start of the ring record
-     * these stages arrived in (issue #68). This is the only point at which that is known: the night
-     * is merged into one session immediately afterwards, and the record boundary is not recoverable
-     * from the stored timeline, because this ring reopens a record a single minute after closing
-     * one and that is the same width as the minute-grid rounding seam between two blocks of the
-     * same record.
-     */
-    private fun buildStageBlocks(
-        sessionId: String,
-        startTs: Long,
-        stages: List<SleepStage>,
-        recordStartAt: Long = startTs,
-    ): List<SleepStageBlockEntity> {
-        if (stages.isEmpty()) return emptyList()
-        val blocks = mutableListOf<SleepStageBlockEntity>()
-        var currentStage = stages[0]
-        var blockStart = startTs
-        var blockMinute = 0
-        var duration = 1
-
-        for (i in 1 until stages.size) {
-            val stage = stages[i]
-            if (stage == currentStage) {
-                duration++
-            } else {
-                blocks.add(SleepStageBlockEntity(
-                    sessionId = sessionId,
-                    startAt = blockStart,
-                    startMinute = blockMinute,
-                    durationMinutes = duration,
-                    stageRaw = currentStage.name,
-                    recordStartAt = recordStartAt,
-                ))
-                currentStage = stage
-                blockStart = startTs + i * 60_000L
-                blockMinute = i
-                duration = 1
-            }
-        }
-        // Final block
-        blocks.add(SleepStageBlockEntity(
-            sessionId = sessionId,
-            startAt = blockStart,
-            startMinute = blockMinute,
-            durationMinutes = duration,
-            stageRaw = currentStage.name,
-            recordStartAt = recordStartAt,
-        ))
-        return blocks
     }
 
     /**
@@ -889,6 +848,61 @@ internal fun spotReadingsMatching(
     historyAt: Long,
     window: Long = EventPersistenceSubscriber.SPOT_MATCH_MS,
 ): List<Long> = ours.filter { kotlin.math.abs(it - historyAt) <= window }
+
+/**
+ * Build SleepStageBlockEntity entries with run-length encoding.
+ * Consecutive minutes of the same stage are merged into one block.
+ *
+ * Every block carries [startTs] as its `recordStartAt` — the declared start of the ring record
+ * these stages arrived in (issue #68). This is the only point at which that is known: the night
+ * is merged into one session immediately afterwards, and the record boundary is not recoverable
+ * from the stored timeline, because this ring reopens a record a single minute after closing
+ * one and that is the same width as the minute-grid rounding seam between two blocks of the
+ * same record.
+ */
+internal fun buildStageBlocks(
+    sessionId: String,
+    startTs: Long,
+    stages: List<SleepStage>,
+    recordStartAt: Long = startTs,
+): List<SleepStageBlockEntity> {
+    if (stages.isEmpty()) return emptyList()
+    val blocks = mutableListOf<SleepStageBlockEntity>()
+    var currentStage = stages[0]
+    var blockStart = startTs
+    var blockMinute = 0
+    var duration = 1
+
+    for (i in 1 until stages.size) {
+        val stage = stages[i]
+        if (stage == currentStage) {
+            duration++
+        } else {
+            blocks.add(SleepStageBlockEntity(
+                sessionId = sessionId,
+                startAt = blockStart,
+                startMinute = blockMinute,
+                durationMinutes = duration,
+                stageRaw = currentStage.name,
+                recordStartAt = recordStartAt,
+            ))
+            currentStage = stage
+            blockStart = startTs + i * 60_000L
+            blockMinute = i
+            duration = 1
+        }
+    }
+    // Final block
+    blocks.add(SleepStageBlockEntity(
+        sessionId = sessionId,
+        startAt = blockStart,
+        startMinute = blockMinute,
+        durationMinutes = duration,
+        stageRaw = currentStage.name,
+        recordStartAt = recordStartAt,
+    ))
+    return blocks
+}
 
 internal fun historyMeasurementId(kind: MeasurementKind, timestamp: Long): String =
     "history:${kind.key}:$timestamp"

@@ -296,19 +296,4 @@ class SleepRecordDeletionTest {
         assertEquals(2, targets.size)
         assertEquals(listOf(b1.startAt, b2.startAt), targets.map { it.startAt })
     }
-
-    // ── Issue #106: a picked time outside the record says so ─────────────
-
-    @Test
-    fun `a picked time outside the record is reported, the record's own minutes are not`() {
-        val start = 1_791_766_260_000L + 13_000L                    // a record starting at :13 s
-        val end = start + 293 * 60_000L
-        val outside = { picked: Long -> com.pulseloop.ui.screens.isOutsideRecord(picked, start, end) }
-        // The minutes shown on the buttons, picked back, are inside despite the record's seconds.
-        assertFalse(outside(start - 13_000L))
-        assertFalse(outside(end - end % 60_000L))
-        // A minute earlier than the start, or later than the end, is outside.
-        assertTrue(outside(start - 13_000L - 60_000L))
-        assertTrue(outside(end - end % 60_000L + 60_000L))
-    }
 }
