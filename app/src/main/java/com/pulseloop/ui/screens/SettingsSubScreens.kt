@@ -1499,12 +1499,16 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val scope = rememberCoroutineScope()
     val device = db.deviceDao().currentFlow().collectAsState(initial = null).value
     val capabilities = device?.capabilities.orEmpty()
-    val minimumInterval = if (device?.deviceType == RingDeviceType.YCBT) 30 else 5
+    // Both YCBT-protocol families get the raised bounds: `COLMI_SMART_HEALTH` rides the same
+    // [com.pulseloop.ring.YCBTDriver], so its ring can carry the same settings (issue #103,
+    // Albabit's `colmi-smarthealth` unit was capped at 5–60 until 2026-10-23).
+    val isYcbtProtocol = device?.deviceType in setOf(RingDeviceType.YCBT, RingDeviceType.COLMI_SMART_HEALTH)
+    val minimumInterval = if (isYcbtProtocol) 30 else 5
     // 120 min is the only interval beyond the vendor app's own menu (which stops at 60) that is
     // tested on hardware: the ring ACKed `01 0c 01 78` and read at 10:00 and 12:00 (issue #103,
-    // 2026-10-22). Nothing longer until someone tries it, and YCBT only — it is not the vendor
-    // app's behaviour, it is one ring's.
-    val maximumHrInterval = if (device?.deviceType == RingDeviceType.YCBT) 120 else 60
+    // 2026-10-22). Nothing longer until someone tries it, and YCBT-protocol rings only — it is
+    // not the vendor app's behaviour, it is one ring's.
+    val maximumHrInterval = if (isYcbtProtocol) 120 else 60
     val intervalSteps = ((maximumHrInterval - minimumInterval) / 5 - 1).coerceAtLeast(0)
     // Only offered where the ring's protocol actually carries a separate blood-oxygen interval —
     // elsewhere the slider moved, the value saved, and "Saved & sent to ring ✓" appeared over a
@@ -1514,8 +1518,12 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     // so it needs its own step count: reusing the HR one put ticks 5.45 min apart, none of which
     // the 5-minute snap could land on.
     val spo2IntervalSteps = ((60 - (minimumInterval - 5)) / 5 - 1).coerceAtLeast(0)
+    // Same exclusion as [RingDeviceType.YCBT]: the YCBT wire format has no stress-monitor
+    // setting ([com.pulseloop.ring.YCBTEncoder.monitorCommands] carries HR/BP/temp/SpO₂/HRV
+    // only), so a toggle here would be a no-op the ring never sees — the capability bit alone
+    // is not enough to offer it.
     val supportsStressSetting = WearableCapability.STRESS in capabilities &&
-        device?.deviceType != RingDeviceType.YCBT
+        !isYcbtProtocol
 
     var cfgHrEnabled by remember { mutableStateOf(true) }
     var cfgHrInterval by remember { mutableStateOf(5) }
