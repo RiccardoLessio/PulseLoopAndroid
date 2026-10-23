@@ -437,7 +437,43 @@ interface CoachConversationDao {
 
     @Upsert
     suspend fun upsert(conversation: CoachConversationEntity)
+
+    @Query("SELECT * FROM coach_conversations WHERE id = :id LIMIT 1")
+    suspend fun byId(id: String): CoachConversationEntity?
+
+    /**
+     * The coach's past conversations for the history sheet (issue #131), newest first. Only ones
+     * with at least one message: "+" persists its thread up front, so an unused one is an empty
+     * row that would otherwise list as a blank entry.
+     */
+    @Query(
+        """SELECT c.id, c.createdAt, c.updatedAt,
+            (SELECT m.body FROM coach_messages m WHERE m.conversationId = c.id AND m.role = 'user'
+                ORDER BY m.createdAt ASC LIMIT 1) AS firstQuestion,
+            (SELECT COUNT(*) FROM coach_messages m WHERE m.conversationId = c.id) AS messageCount
+        FROM coach_conversations c
+        WHERE EXISTS (SELECT 1 FROM coach_messages m WHERE m.conversationId = c.id)
+        ORDER BY c.updatedAt DESC"""
+    )
+    fun historyFlow(): Flow<List<CoachConversationSummary>>
+
+    /** Delete its messages and tool calls first — see [CoachMessageDao], [CoachToolCallDao]. */
+    @Query("DELETE FROM coach_conversations WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM coach_conversations")
+    suspend fun deleteAll()
 }
+
+/** One row of the coach history sheet (issue #131). */
+data class CoachConversationSummary(
+    val id: String,
+    val createdAt: Long,
+    val updatedAt: Long,
+    /** The first thing the user asked; null only if the thread holds no user message. */
+    val firstQuestion: String?,
+    val messageCount: Int,
+)
 
 @Dao
 interface CoachMessageDao {
@@ -449,6 +485,20 @@ interface CoachMessageDao {
 
     @Insert
     suspend fun insert(message: CoachMessageEntity)
+
+    /** Attachment refs of a conversation's messages, so deleting it can delete the image files. */
+    @Query("SELECT attachmentsJson FROM coach_messages WHERE conversationId = :convId AND attachmentsJson IS NOT NULL")
+    suspend fun attachmentsJsonFor(convId: String): List<String>
+
+    @Query("SELECT attachmentsJson FROM coach_messages WHERE attachmentsJson IS NOT NULL")
+    suspend fun allAttachmentsJson(): List<String>
+
+    /** Explicit rather than trusting the cascade, which only fires with SQLite's foreign keys on. */
+    @Query("DELETE FROM coach_messages WHERE conversationId = :convId")
+    suspend fun deleteForConversation(convId: String)
+
+    @Query("DELETE FROM coach_messages")
+    suspend fun deleteAll()
 }
 
 @Dao
@@ -479,6 +529,13 @@ interface CoachToolCallDao {
 
     @Insert
     suspend fun insert(call: CoachToolCallEntity)
+
+    /** `coach_tool_calls` has no foreign key to its conversation, so a delete has to clear it. */
+    @Query("DELETE FROM coach_tool_calls WHERE conversationId = :convId")
+    suspend fun deleteForConversation(convId: String)
+
+    @Query("DELETE FROM coach_tool_calls")
+    suspend fun deleteAll()
 }
 
 @Dao

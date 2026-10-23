@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -131,7 +132,11 @@ fun CoachScreen(
  * chat then scrolls under it.
  */
 @Composable
-fun CoachHeader(onNewChat: () -> Unit, onOpenUsage: (() -> Unit)? = null) {
+fun CoachHeader(
+    onNewChat: () -> Unit,
+    onOpenUsage: (() -> Unit)? = null,
+    onOpenHistory: (() -> Unit)? = null,
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -169,6 +174,19 @@ fun CoachHeader(onNewChat: () -> Unit, onOpenUsage: (() -> Unit)? = null) {
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Info, "Usage & cost", tint = PulseColors.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (onOpenHistory != null) {
+            Box(
+                Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(PulseColors.card)
+                    .border(1.dp, PulseColors.borderSubtle, CircleShape)
+                    .clickable(onClick = onOpenHistory),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.History, "Past conversations", tint = PulseColors.textSecondary, modifier = Modifier.size(18.dp))
             }
         }
         Box(

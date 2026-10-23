@@ -2,6 +2,7 @@ package com.pulseloop.ui.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import com.pulseloop.data.ActivityBucketDeletion
 import com.pulseloop.data.DemoDataPolicy
 import com.pulseloop.data.PulseLoopDatabase
@@ -889,11 +890,15 @@ class CoachViewModel(
     private val attachmentPayloads: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> List<com.pulseloop.coach.attachments.CoachImagePayload> = { emptyList() },
     /** Opt-in city + weather (iOS #65d), injected so the VM stays context-free like [attachmentPayloads]. */
     private val environmentSnapshot: suspend () -> com.pulseloop.coach.context.EnvironmentContext? = { null },
+    /** Deletes the image files behind attachment refs, when their conversation is deleted (issue #131). */
+    private val deleteAttachments: (List<com.pulseloop.coach.attachments.CoachAttachmentRef>) -> Unit = {},
 ) : ViewModel() {
     data class CoachState(
         val messages: List<ChatMessage> = emptyList(),
         val isThinking: Boolean = false,
         val error: String? = null,
+        /** The thread on screen, so the history sheet can mark it (issue #131). */
+        val conversationId: String? = null,
     )
 
     data class ChatMessage(
@@ -933,15 +938,69 @@ class CoachViewModel(
     private suspend fun loadOrCreateConversation() {
         val existing = db.coachConversationDao().recent(limit = 1).firstOrNull()
         if (existing != null) {
-            currentConversation = existing
-            val messages = db.coachMessageDao().forConversation(existing.id)
-            if (messages.isNotEmpty()) {
-                _state.update { it.copy(messages = messages.map { m -> m.toChatMessage() }) }
-            }
+            show(existing)
             return
         }
         currentConversation = CoachConversationEntity()
         db.coachConversationDao().upsert(currentConversation)
+        _state.update { it.copy(conversationId = currentConversation.id) }
+    }
+
+    /** Make [conversation] the active thread and show its persisted messages (or the greeting). */
+    private suspend fun show(conversation: CoachConversationEntity) {
+        currentConversation = conversation
+        val messages = db.coachMessageDao().forConversation(conversation.id)
+        _state.value = CoachState(
+            messages = if (messages.isEmpty()) listOf(greeting) else messages.map { m -> m.toChatMessage() },
+            conversationId = conversation.id,
+        )
+    }
+
+    /** Past conversations for the history sheet (issue #131), newest first, empty ones left out. */
+    val history: Flow<List<com.pulseloop.data.dao.CoachConversationSummary>> =
+        db.coachConversationDao().historyFlow()
+
+    /**
+     * Reopen a past conversation (issue #131). A turn still in flight on the old thread keeps
+     * going and is stored under it; it just no longer lands on screen (see [sendMessage]).
+     */
+    fun openConversation(id: String) {
+        if (id == currentConversation.id) return
+        conversationReady = viewModelScope.launch {
+            val conversation = db.coachConversationDao().byId(id) ?: return@launch
+            show(conversation)
+        }
+    }
+
+    /** Delete one conversation with its messages, tool-call trace and attached images (issue #131).
+     *  Deleting the one on screen starts a new thread in its place. */
+    fun deleteConversation(id: String) {
+        val wasCurrent = id == currentConversation.id
+        if (wasCurrent) newConversation()
+        viewModelScope.launch {
+            val attachments = db.coachMessageDao().attachmentsJsonFor(id)
+            db.withTransaction {
+                db.coachToolCallDao().deleteForConversation(id)
+                db.coachMessageDao().deleteForConversation(id)
+                db.coachConversationDao().deleteById(id)
+            }
+            deleteAttachments(attachments.flatMap { com.pulseloop.coach.attachments.CoachAttachmentRef.decode(it) })
+        }
+    }
+
+    /** Delete every conversation (issue #131) and start a new one. */
+    fun deleteAllConversations() {
+        viewModelScope.launch {
+            conversationReady.join()
+            val attachments = db.coachMessageDao().allAttachmentsJson()
+            db.withTransaction {
+                db.coachToolCallDao().deleteAll()
+                db.coachMessageDao().deleteAll()
+                db.coachConversationDao().deleteAll()
+            }
+            deleteAttachments(attachments.flatMap { com.pulseloop.coach.attachments.CoachAttachmentRef.decode(it) })
+            newConversation()
+        }
     }
 
     /** The active thread's id, for the usage sheet — a one-shot fetch when the sheet opens rather
@@ -971,8 +1030,8 @@ class CoachViewModel(
     /** Reset to a fresh thread (iOS CoachView "+" button). Starts a NEW persisted conversation —
      *  the old one's rows are left in Room untouched, not deleted. */
     fun newConversation() {
-        _state.value = CoachState(messages = listOf(greeting))
         currentConversation = CoachConversationEntity()
+        _state.value = CoachState(messages = listOf(greeting), conversationId = currentConversation.id)
         conversationReady = viewModelScope.launch { db.coachConversationDao().upsert(currentConversation) }
     }
 
@@ -1030,13 +1089,20 @@ class CoachViewModel(
                 // `error`, or CoachScreen renders a duplicate "Error: <code>" footer for the same
                 // failure. `error` stays null here and is reserved for the catch-block path below,
                 // which shows a plain (non-error-bubble) apology and needs the footer.
-                _state.update { it.copy(
-                    messages = it.messages + reply,
-                    isThinking = false,
-                ) }
+                // Only onto the thread it was asked in: after "+" or opening another conversation
+                // mid-turn, the reply is stored under its own thread but not shown on this one.
+                if (currentConversation.id == conversationId) {
+                    _state.update { it.copy(
+                        messages = it.messages + reply,
+                        isThinking = false,
+                    ) }
+                }
                 // A failed turn still burned tokens, so it's persisted too (role "error", not
                 // "assistant") — the context-replay filter above keys off isError, not the
                 // persisted role, so this doesn't leak into future prompts.
+                // Deleted while the provider was answering (issue #131): storing the reply and
+                // touching the row below would bring the conversation back with half its turn.
+                if (db.coachConversationDao().byId(conversationId) == null) return@launch
                 val persistedRole = if (reply.isError) "error" else "assistant"
                 val usage = result.usage
                 // Cost prefers the provider-reported figure (OpenRouter); else the catalog
@@ -1073,10 +1139,12 @@ class CoachViewModel(
                 // "+" tap mid-turn already moved `currentConversation` on to a newer one.
                 if (currentConversation.id == conversationId) currentConversation = touched
             } catch (e: Exception) {
-                _state.update { it.copy(
-                    messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
-                    isThinking = false, error = e.message,
-                ) }
+                if (currentConversation.id == conversationId) {
+                    _state.update { it.copy(
+                        messages = it.messages + ChatMessage("assistant", "Sorry, something went wrong: ${e.message}"),
+                        isThinking = false, error = e.message,
+                    ) }
+                }
             }
         }
     }
