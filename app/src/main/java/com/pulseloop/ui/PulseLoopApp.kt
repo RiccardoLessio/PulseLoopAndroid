@@ -321,6 +321,8 @@ fun PulseLoopApp() {
             Tab("vitals", "Vitals", Icons.Filled.Favorite, Icons.Outlined.FavoriteBorder),
             Tab("activity", "Activity", Icons.Filled.MonitorHeart, Icons.Outlined.MonitorHeart),
             Tab("sleep", "Sleep", Icons.Filled.Bedtime, Icons.Outlined.Bedtime),
+            // Fork v0.3: the diary as a tab (same screen as Settings -> Diario, without the back arrow).
+            Tab(DIARY_TAB_ROUTE, "Diario", Icons.Filled.EditNote, Icons.Outlined.EditNote),
             Tab("coach", "Coach", Icons.Filled.AutoAwesome, Icons.Outlined.AutoAwesome),
         )
 
@@ -654,6 +656,7 @@ fun PulseLoopApp() {
                 paddedComposable("settings/adaptive") {
                     AdaptiveSettingsScreen(onBack = { navController.popBackStack() }, onOpenLabels = { navController.navigate("labels") })
                 }
+                paddedComposable(DIARY_TAB_ROUTE) { DiaryScreen(onBack = null) }
                 paddedComposable("labels") {
                     ActivityLabelsScreen(onBack = { navController.popBackStack() })
                 }
@@ -780,6 +783,9 @@ fun PulseLoopApp() {
         }
     }
 }
+
+/** The "Diario" bottom tab; `diary?date=` stays the pushed screen (Settings, notifications). */
+internal const val DIARY_TAB_ROUTE = "diary_tab"
 
 private data class Tab(
     val route: String,

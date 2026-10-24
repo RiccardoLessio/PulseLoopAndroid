@@ -57,6 +57,59 @@ object DiaryLogic {
         DiaryChip.LATE_MEAL -> entry.copy(lateMeal = value, updatedAt = now)
     }
 
+    /**
+     * One-tap chips (Today card, quick screen): first tap = sì, the next one flips sì ⇄ no; only a
+     * long-press goes back to unknown ([setChip] with null), so a tap never erases an answer.
+     */
+    fun nextTap(value: Boolean?): Boolean = value != true
+
+    fun tapChip(entry: DiaryEntryEntity, chip: DiaryChip, now: Long): DiaryEntryEntity =
+        setChip(entry, chip, nextTap(chipValue(entry, chip)), now)
+
+    // ── Supplements: null = never touched that day (unknown), a list = the ones taken. ──
+
+    val DEFAULT_SUPPLEMENTS = listOf("teanina", "ashwagandha")
+    private const val MAX_SUPPLEMENT_NAME = 40
+
+    /** Trimmed, lower-case, single spaces; null when blank or too long. */
+    fun normalizeSupplement(raw: String?): String? =
+        raw?.trim()?.lowercase(java.util.Locale.ITALIAN)?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.isNotEmpty() && it.length <= MAX_SUPPLEMENT_NAME }
+
+    fun supplementLabel(name: String) = name.replaceFirstChar { it.titlecase(java.util.Locale.ITALIAN) }
+
+    /** "Integratori rapidi" add: normalised, no duplicates, appended at the end; unchanged if invalid. */
+    fun addQuickSupplement(list: List<String>, raw: String?): List<String> {
+        val name = normalizeSupplement(raw) ?: return list
+        return if (name in list) list else list + name
+    }
+
+    fun removeQuickSupplement(list: List<String>, name: String): List<String> = list - name
+
+    /** Sì (taken), no (the list exists without it), null (unknown: no list at all). */
+    fun supplementValue(entry: DiaryEntryEntity?, name: String): Boolean? = entry?.supplements?.let { name in it }
+
+    /**
+     * true adds the name, false removes it but keeps the (possibly empty) list — "not taken" is an
+     * answer — and null removes it and drops back to unknown once nothing is left.
+     */
+    fun setSupplement(entry: DiaryEntryEntity, name: String, value: Boolean?, now: Long): DiaryEntryEntity {
+        val current = entry.supplements
+        val next = when (value) {
+            true -> (current.orEmpty() - name) + name
+            false -> current.orEmpty() - name
+            null -> current?.let { (it - name).ifEmpty { null } }
+        }
+        return entry.copy(supplements = next, updatedAt = now)
+    }
+
+    fun tapSupplement(entry: DiaryEntryEntity, name: String, now: Long): DiaryEntryEntity =
+        setSupplement(entry, name, nextTap(supplementValue(entry, name)), now)
+
+    /** Anything recorded today (the Today card's "Compilato"). */
+    fun anyAnswered(e: DiaryEntryEntity?): Boolean =
+        eveningAnswered(e) || e?.morningMood != null || e?.morningFeeling != null || e?.supplements != null
+
     fun isValidTime(text: String?): Boolean = text == null || HHMM.matches(text)
 
     /** Normalises `9:5`, `0930`, `21.30` to `HH:mm`; null when blank or not a time. */

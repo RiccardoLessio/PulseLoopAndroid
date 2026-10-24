@@ -52,7 +52,7 @@ import com.pulseloop.data.entity.*
         ActivityTransitionEntity::class,
         ZoneEntity::class,
     ],
-    version = 30,
+    version = 31,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -171,6 +171,20 @@ abstract class PulseLoopDatabase : RoomDatabase() {
         internal val MIGRATION_29_30 = object : Migration(29, 30) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_29_30_SQL.forEach { db.execSQL(it) }
+            }
+        }
+
+        /**
+         * v30 → v31 (v0.3): the diary's supplements (JSON array text, NULL = unknown). One
+         * nullable column added; every existing row keeps its data and reads as "unknown".
+         */
+        internal val MIGRATION_30_31_SQL = listOf(
+            "ALTER TABLE `diary_entries` ADD COLUMN `supplements` TEXT",
+        )
+
+        internal val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_30_31_SQL.forEach { db.execSQL(it) }
             }
         }
 
@@ -702,6 +716,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_27_28,
                         MIGRATION_28_29,
                         MIGRATION_29_30,
+                        MIGRATION_30_31,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

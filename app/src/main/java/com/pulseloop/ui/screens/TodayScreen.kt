@@ -165,6 +165,16 @@ fun TodayScreen(
                 }
             }
 
+            // Fork v0.3: one-tap diary near the top; "Apri diario" switches to the Diario tab.
+            item {
+                TodayDiaryCard(onOpenDiary = {
+                    navController?.navigate(com.pulseloop.ui.DIARY_TAB_ROUTE) {
+                        popUpTo(navController.graph.startDestinationId)
+                        launchSingleTop = true
+                    }
+                })
+            }
+
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     if (editState.editing) ReorderDoneBar { editState.exit() }

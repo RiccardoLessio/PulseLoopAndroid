@@ -1,18 +1,31 @@
 package com.pulseloop.ui.screens
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -31,7 +44,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -46,6 +63,7 @@ import com.pulseloop.diary.DiaryPrefs
 import com.pulseloop.diary.DiaryReminders
 import com.pulseloop.ui.theme.PulseColors
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -53,16 +71,26 @@ import java.util.Locale
 
 private val DAY_FMT = DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.ITALIAN)
 
-/** Saves every edit immediately (upsert by day); nothing is ever written as an implicit "no". */
+/**
+ * Saves every edit immediately (upsert by day); nothing is ever written as an implicit "no". The
+ * change is applied to the row as stored, one edit at a time, so two quick taps on a one-tap chip
+ * cycle sì → no instead of both reading the same not-yet-refreshed state.
+ */
 private class DiaryEditor(private val context: android.content.Context, private val scope: kotlinx.coroutines.CoroutineScope) {
     private val dao = PulseLoopDatabase.getInstance(context).diaryEntryDao()
-    fun save(date: LocalDate, current: DiaryEntryEntity?, change: (DiaryEntryEntity) -> DiaryEntryEntity) {
-        val now = System.currentTimeMillis()
-        val base = current ?: DiaryLogic.empty(date, now)
+    fun save(date: LocalDate, change: (DiaryEntryEntity) -> DiaryEntryEntity) {
         scope.launch {
-            dao.upsert(change(base).copy(updatedAt = now))
+            writes.withLock {
+                val now = System.currentTimeMillis()
+                val base = dao.byDate(date.toString()) ?: DiaryLogic.empty(date, now)
+                dao.upsert(change(base).copy(updatedAt = now))
+            }
             com.pulseloop.remote.RingHubSyncWorker.enqueue(context)
         }
+    }
+
+    companion object {
+        private val writes = kotlinx.coroutines.sync.Mutex()
     }
 }
 
@@ -81,17 +109,106 @@ private fun OptionalTimeRow(label: String, value: String?, onChange: (String?) -
 }
 
 @Composable
-private fun QuickFields(entry: DiaryEntryEntity?, onChange: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit) {
+private fun QuickFields(entry: DiaryEntryEntity?, supplements: List<String>, onChange: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit) {
     val now = System.currentTimeMillis()
     DiaryChip.entries.forEach { chip ->
         TriAnswerRow(chip.label, DiaryLogic.chipValue(entry, chip)) { v -> onChange { DiaryLogic.setChip(it, chip, v, now) } }
     }
+    supplements.forEach { name ->
+        TriAnswerRow(DiaryLogic.supplementLabel(name), DiaryLogic.supplementValue(entry, name)) { v ->
+            onChange { DiaryLogic.setSupplement(it, name, v, now) }
+        }
+    }
     ScaleRow("Umore", entry?.mood, { v -> onChange { it.copy(mood = v) } })
+}
+
+/**
+ * A one-tap answer chip: tap = sì, tap again = no (then back to sì), long-press = non so. The
+ * state is spelled out in the label, not only in the colour.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun OneTapChip(label: String, value: Boolean?, onTap: () -> Unit, onClear: () -> Unit) {
+    val haptics = LocalHapticFeedback.current
+    val colors = MaterialTheme.colorScheme
+    val (container, content) = when (value) {
+        true -> colors.primary to colors.onPrimary
+        false -> colors.surfaceVariant to colors.onSurfaceVariant
+        null -> colors.surface to colors.onSurface
+    }
+    val text = when (value) {
+        true -> "✓ $label: sì"
+        false -> "✗ $label: no"
+        null -> label
+    }
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = container,
+        contentColor = content,
+        border = if (value == null) BorderStroke(1.dp, colors.outline) else null,
+        modifier = Modifier
+            .semantics { stateDescription = when (value) { true -> "sì"; false -> "no"; null -> "non indicato" } }
+            .combinedClickable(
+                onClick = onTap,
+                onLongClickLabel = "Cancella",
+                onLongClick = if (value != null) {
+                    { haptics.performHapticFeedback(HapticFeedbackType.LongPress); onClear() }
+                } else null,
+            ),
+    ) {
+        Text(text, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/** Today screen: "Diario di oggi", one tap per answer, nothing mandatory, saved immediately. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun TodayDiaryCard(onOpenDiary: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val db = remember { PulseLoopDatabase.getInstance(context) }
+    val editor = remember { DiaryEditor(context, scope) }
+    val settings by remember { DiaryPrefs.get(context) }.settings.collectAsState()
+    // Same day key as the diary tab: before 04:00 it is still yesterday's evening.
+    val date = remember { DiaryLogic.diaryDateFor(System.currentTimeMillis()) }
+    val entry by db.diaryEntryDao().byDateFlow(date.toString()).collectAsState(initial = null)
+    val update: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit = { change -> editor.save(date, change) }
+    val compiled = DiaryLogic.anyAnswered(entry)
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Diario di oggi", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (compiled) "✓ Compilato" else "Facoltativo",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (compiled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                "Tocca = sì · di nuovo = no · tieni premuto = cancella",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                DiaryChip.entries.forEach { chip ->
+                    OneTapChip(chip.label, DiaryLogic.chipValue(entry, chip),
+                        onTap = { update { DiaryLogic.tapChip(it, chip, System.currentTimeMillis()) } },
+                        onClear = { update { DiaryLogic.setChip(it, chip, null, System.currentTimeMillis()) } })
+                }
+                settings.quickSupplements.forEach { name ->
+                    OneTapChip(DiaryLogic.supplementLabel(name), DiaryLogic.supplementValue(entry, name),
+                        onTap = { update { DiaryLogic.tapSupplement(it, name, System.currentTimeMillis()) } },
+                        onClear = { update { DiaryLogic.setSupplement(it, name, null, System.currentTimeMillis()) } })
+                }
+            }
+            ScaleRow("Umore", entry?.mood, { v -> update { it.copy(mood = v) } })
+            TextButton(onClick = onOpenDiary, modifier = Modifier.align(Alignment.End)) { Text("Apri diario") }
+        }
+    }
 }
 
 /** The full diary: today's (or any day's) entry, reminder settings, history. */
 @Composable
-fun DiaryScreen(onBack: () -> Unit, initialDate: String? = null) {
+fun DiaryScreen(onBack: (() -> Unit)?, initialDate: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val db = remember { PulseLoopDatabase.getInstance(context) }
@@ -102,7 +219,7 @@ fun DiaryScreen(onBack: () -> Unit, initialDate: String? = null) {
     val prefs = remember { DiaryPrefs.get(context) }
     val settings by prefs.settings.collectAsState()
     var showDetails by remember { mutableStateOf(false) }
-    val update: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit = { change -> editor.save(date, entry, change) }
+    val update: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit = { change -> editor.save(date, change) }
 
     val derived by produceState<String?>(initialValue = null, date) {
         val zone = ZoneId.systemDefault()
@@ -125,14 +242,14 @@ fun DiaryScreen(onBack: () -> Unit, initialDate: String? = null) {
         }
     }
 
-    SettingsSubScreen(title = "Diario", onBack = onBack) {
+    val content: @Composable ColumnScope.() -> Unit = {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { date = date.minusDays(1) }) { Text("‹") }
             Text(date.format(DAY_FMT).replaceFirstChar { it.uppercase() }, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
             if (date < LocalDate.now()) TextButton(onClick = { date = date.plusDays(1) }) { Text("›") }
         }
         SectionCard("Stasera", "Facoltativo. Tocca solo ciò che vale: quello che lasci vuoto resta \"non so\".") {
-            QuickFields(entry, update)
+            QuickFields(entry, settings.quickSupplements, update)
             derived?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             TextButton(onClick = { showDetails = !showDetails }) { Text(if (showDetails) "Nascondi dettagli" else "Altri dettagli (facoltativi)") }
             if (showDetails) DetailFields(entry, update)
@@ -142,6 +259,7 @@ fun DiaryScreen(onBack: () -> Unit, initialDate: String? = null) {
             ScaleRow("Come ti senti", entry?.morningFeeling, { v -> update { it.copy(morningFeeling = v) } })
         }
         ReminderSettings(settings, prefs)
+        QuickSupplementsSettings(settings, prefs)
         SectionCard("Storico") {
             if (history.isEmpty()) Text("Nessuna voce.", style = MaterialTheme.typography.bodySmall)
             history.forEach { e ->
@@ -153,6 +271,46 @@ fun DiaryScreen(onBack: () -> Unit, initialDate: String? = null) {
             }
         }
     }
+    if (onBack != null) {
+        SettingsSubScreen(title = "Diario", onBack = onBack, content = content)
+    } else {
+        // The "Diario" tab: the route wrapper already pads for the shared header and tab bar.
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            content()
+        }
+    }
+}
+
+/** "Integratori rapidi": the supplement chips offered on Today, in the diary and the quick screen. */
+@Composable
+private fun QuickSupplementsSettings(settings: com.pulseloop.diary.DiarySettings, prefs: DiaryPrefs) {
+    var draft by remember { mutableStateOf("") }
+    val candidate = DiaryLogic.normalizeSupplement(draft)
+    val canAdd = candidate != null && candidate !in settings.quickSupplements
+    SectionCard("Integratori rapidi", "Pulsanti a un tocco nella scheda Oggi e nel diario. Toglierne uno non cancella lo storico.") {
+        if (settings.quickSupplements.isEmpty()) Text("Nessuno.", style = MaterialTheme.typography.bodySmall)
+        settings.quickSupplements.forEach { name ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(DiaryLogic.supplementLabel(name), Modifier.weight(1f))
+                IconButton(onClick = { prefs.update { it.copy(quickSupplements = DiaryLogic.removeQuickSupplement(it.quickSupplements, name)) } }) {
+                    Icon(Icons.Filled.Close, contentDescription = "Rimuovi ${DiaryLogic.supplementLabel(name)}")
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = draft, onValueChange = { draft = it },
+                label = { Text("Nuovo integratore") }, singleLine = true, modifier = Modifier.weight(1f),
+            )
+            Button(enabled = canAdd, onClick = {
+                prefs.update { it.copy(quickSupplements = DiaryLogic.addQuickSupplement(it.quickSupplements, draft)) }
+                draft = ""
+            }) { Text("Aggiungi") }
+        }
+    }
 }
 
 private fun summary(e: DiaryEntryEntity): String = listOfNotNull(
@@ -160,6 +318,7 @@ private fun summary(e: DiaryEntryEntity): String = listOfNotNull(
     e.alcohol?.let { if (it) "alcol" + (e.alcoholUnits?.let { u -> " ($u u)" } ?: "") else "niente alcol" },
     e.lateMeal?.let { if (it) "pasto tardi" else null },
     e.sport?.let { if (it) "sport" else null },
+    e.supplements?.let { s -> if (s.isEmpty()) "nessun integratore" else s.joinToString(", ") },
     e.mood?.let { "umore $it/5" },
     e.morningFeeling?.let { "mattina $it/5" },
 ).joinToString(" · ").ifEmpty { "—" }
@@ -260,7 +419,8 @@ fun DiaryQuickScreen(date: LocalDate, morning: Boolean, onDone: () -> Unit, onOp
     val db = remember { PulseLoopDatabase.getInstance(context) }
     val editor = remember { DiaryEditor(context, scope) }
     val entry by db.diaryEntryDao().byDateFlow(date.toString()).collectAsState(initial = null)
-    val update: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit = { change -> editor.save(date, entry, change) }
+    val update: ((DiaryEntryEntity) -> DiaryEntryEntity) -> Unit = { change -> editor.save(date, change) }
+    val settings by remember { DiaryPrefs.get(context) }.settings.collectAsState()
     LaunchedEffect(entry?.morningMood, entry?.morningFeeling) {
         if (morning && DiaryLogic.morningAnswered(entry)) onDone()
     }
@@ -275,7 +435,7 @@ fun DiaryQuickScreen(date: LocalDate, morning: Boolean, onDone: () -> Unit, onOp
             ScaleRow("Come ti senti", entry?.morningFeeling, { v -> update { it.copy(morningFeeling = v) } })
         } else {
             Text("Tocca solo ciò che vale. Sport e schermi li rileva l'app.", style = MaterialTheme.typography.bodySmall)
-            QuickFields(entry, update)
+            QuickFields(entry, settings.quickSupplements, update)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onDone) { Text("Fatto") }

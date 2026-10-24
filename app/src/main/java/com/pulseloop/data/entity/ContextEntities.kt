@@ -3,6 +3,11 @@ package com.pulseloop.data.entity
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.TypeConverter
+import androidx.room.TypeConverters
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
 import java.util.UUID
 
 /*
@@ -61,6 +66,7 @@ data class ActivityLabelEntity(
     tableName = "diary_entries",
     indices = [Index(value = ["date"], unique = true), Index("updatedAt")],
 )
+@TypeConverters(StringListConverter::class)
 data class DiaryEntryEntity(
     @PrimaryKey val id: String,
     /** Local day, ISO `yyyy-MM-dd`. */
@@ -92,10 +98,28 @@ data class DiaryEntryEntity(
     val morningFeeling: Int? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /**
+     * v31: supplements taken that day (normalised names, e.g. "teanina"). Null = never touched
+     * (unknown); a list = the ones taken, so an empty list means "none of them". Last column on
+     * purpose: `ALTER TABLE ADD COLUMN` appends, and this keeps Room's CREATE identical to it.
+     */
+    val supplements: List<String>? = null,
 ) {
     companion object {
         fun idFor(date: String) = "diary:$date"
     }
+}
+
+/** `List<String>?` <-> JSON array text; null stays SQL NULL (unknown), never `[]`. */
+class StringListConverter {
+    private val serializer = ListSerializer(String.serializer())
+
+    @TypeConverter
+    fun fromList(value: List<String>?): String? = value?.let { Json.encodeToString(serializer, it) }
+
+    @TypeConverter
+    fun toList(value: String?): List<String>? =
+        value?.let { runCatching { Json.decodeFromString(serializer, it) }.getOrNull() }
 }
 
 /** Screen-on minutes per hour from UsageStatsManager; id `usage:<hourStart>`. */

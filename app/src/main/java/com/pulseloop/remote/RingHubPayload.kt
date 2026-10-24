@@ -87,6 +87,8 @@ data class DiaryEntryDTO(
     val screensInBed: Boolean? = null, val mood: Int? = null, val perceivedStress: Int? = null, val illness: Boolean? = null,
     val notes: String? = null, val morningMood: Int? = null, val morningFeeling: Int? = null,
     val createdAt: Long, val updatedAt: Long,
+    /** v0.3: supplements taken (null = unknown). Older ring-hub servers ignore the field. */
+    val supplements: List<String>? = null,
 )
 
 @Serializable
@@ -119,7 +121,7 @@ internal fun DiaryEntryEntity.toDto() = DiaryEntryDTO(
     lateMealTime = lateMealTime, sport = sport, sportStart = sportStart, sportDurationMin = sportDurationMin,
     sportIntensity = sportIntensity, screensInBed = screensInBed, mood = mood, perceivedStress = perceivedStress,
     illness = illness, notes = notes, morningMood = morningMood, morningFeeling = morningFeeling,
-    createdAt = createdAt, updatedAt = updatedAt,
+    createdAt = createdAt, updatedAt = updatedAt, supplements = supplements,
 )
 
 internal fun PhoneUsageHourlyEntity.toDto() = PhoneUsageHourlyDTO(id, hourStart, screenOnMinutes, unlocks, lastScreenOffAt, updatedAt)

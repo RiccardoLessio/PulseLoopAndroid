@@ -288,6 +288,7 @@ class RingHubSyncTest {
         assertEquals("2026-10-20", diary["date"]!!.jsonPrimitive.content)
         assertEquals("true", diary["lateCaffeine"]!!.jsonPrimitive.content)
         assertEquals("null", diary["alcohol"].toString())   // unknown travels as null, never false
+        assertEquals(listOf("teanina"), diary["supplements"]!!.jsonArray.map { it.jsonPrimitive.content })
 
         // Left in the build dir for scripts/validate (not part of the assertion).
         File("build/ringhub-sample-batch.json").apply { parentFile?.mkdirs() }.writeText(text)
@@ -298,7 +299,7 @@ class RingHubSyncTest {
     private fun MemorySource.addContext() {
         transitions += AdaptiveTransitionEntity(id = "tr-1", timestamp = T, fromState = "BASELINE", toState = "WATCH", reason = "hr_high", episodeId = "ep-1", valuesJson = "{\"hr\":104}", createdAt = T)
         labels += ActivityLabelEntity(id = "lab-1", timestamp = T, category = "meeting", suggested = "work", episodeId = "ep-1", transitionId = "tr-1", createdAt = T, updatedAt = T)
-        diary += DiaryEntryEntity(id = "diary:2026-10-20", date = "2026-10-20", lateCaffeine = true, caffeine = true, mood = 4, createdAt = T, updatedAt = T)
+        diary += DiaryEntryEntity(id = "diary:2026-10-20", date = "2026-10-20", lateCaffeine = true, caffeine = true, mood = 4, supplements = listOf("teanina"), createdAt = T, updatedAt = T)
         usage += PhoneUsageHourlyEntity(id = "usage:1792483200000", hourStart = 1_792_483_200_000, screenOnMinutes = 12.5, unlocks = 3, lastScreenOffAt = T - 60_000, updatedAt = T)
         points += LocationPointEntity(id = "loc-1", timestamp = T, latitude = 45.07, longitude = 7.68, accuracy = 25f, speed = 0f, provider = "fused", createdAt = T)
         activities += ActivityTransitionEntity(id = "act-1", timestamp = T, activityType = "IN_VEHICLE", transition = "ENTER", createdAt = T)
@@ -344,6 +345,22 @@ class RingHubSyncTest {
         assertEquals(listOf("traffic"), sent.flatMap { it.activityLabels }.map { it.category })
         assertEquals(listOf(true), sent.flatMap { it.diaryEntries }.map { it.alcohol })
         assertTrue(sent.flatMap { it.adaptiveTransitions }.isEmpty())   // behind the watermark + overlap
+    }
+
+    @Test
+    fun `diary supplements travel as a list, unknown as null, none as an empty list`() {
+        fun encode(supplements: List<String>?) = ringHubJson.parseToJsonElement(
+            ringHubJson.encodeToString(
+                DiaryEntryDTO.serializer(),
+                DiaryEntryEntity(id = "diary:2026-10-20", date = "2026-10-20", supplements = supplements, createdAt = T, updatedAt = T).toDto(),
+            ),
+        ).jsonObject["supplements"]
+        assertEquals("null", encode(null).toString())
+        assertEquals("[]", encode(emptyList()).toString())
+        assertEquals("[\"teanina\",\"ashwagandha\"]", encode(listOf("teanina", "ashwagandha")).toString())
+        // A v0.2 payload without the field still decodes (unknown).
+        val old = ringHubJson.decodeFromString(DiaryEntryDTO.serializer(), """{"id":"d","date":"2026-10-20","createdAt":1,"updatedAt":1}""")
+        assertNull(old.supplements)
     }
 
     @Test

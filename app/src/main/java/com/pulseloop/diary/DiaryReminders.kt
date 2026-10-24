@@ -44,6 +44,8 @@ data class DiarySettings(
     val modeCode: String? = null,
     val morningEnabled: Boolean = false,
     val morningMinute: Int = 7 * 60 + 30,
+    /** "Integratori rapidi": the one-tap supplement chips, normalised names (DiaryLogic.normalizeSupplement). */
+    val quickSupplements: List<String> = DiaryLogic.DEFAULT_SUPPLEMENTS,
 ) {
     val chosenMode: DiaryDeliveryMode? get() = DiaryDeliveryMode.of(modeCode)
 }
