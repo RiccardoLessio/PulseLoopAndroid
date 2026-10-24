@@ -127,7 +127,7 @@ fun PulseLoopApp() {
 
         // ── ViewModels ───────────────────────────────────────────────────
         val todayVM = remember { TodayViewModel(db, apiKeyStore) }
-        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore) }
+        val vitalsVM = remember { VitalsViewModel(db, apiKeyStore, com.pulseloop.settings.ScheduledSpo2Prefs(context)) }
         val sleepVM = remember {
             val appContext = context.applicationContext
             SleepViewModel(db, gapBridge = { com.pulseloop.service.SleepGapBridge.fromSettings(appContext) })

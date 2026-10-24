@@ -47,7 +47,7 @@ class ScheduledSpo2Worker(
     companion object {
         private const val WORK_NAME = "scheduled_spot_spo2"
         private const val TAG = "ScheduledSpo2Worker"
-        private const val CONNECT_TIMEOUT_MS = 20_000L
+        private const val CONNECT_TIMEOUT_MS = 45_000L
         /** Startup history has to drain before the sensor is taken — the ring serves one thing at a time. */
         private const val SYNC_DRAIN_TIMEOUT_MS = 45_000L
 
@@ -82,16 +82,26 @@ class ScheduledSpo2Worker(
         }
 
         /**
-     * The SpO₂ interval the ring is set to, or null when its SpO₂ monitor is off or unset. Never
-     * above 60: the heart-rate interval can now go to 120 (issue #103), but the blood-oxygen
-     * command keeps the old ceiling — 120 min is only evidenced on the heart-rate key — so the
-     * ring's SpO₂ grid, which the app's slots live between, is too.
-     */
+         * The interval the ring measures on, to keep the app's spot SpO₂ clear of.
+         * On YCBT rings (including Colmi SmartHealth), background measurements follow the
+         * heart-rate schedule (the ring derives SpO₂ during HR measurements and ignores 0x26).
+         * Even if the user turns off the ring's SpO₂ toggle, the ring still measures on the HR
+         * interval. Supports HR intervals up to 120 min (issue #103).
+         */
         private suspend fun intervalMinutes(db: PulseLoopDatabase): Int? {
             val settings = loadPersistedMeasurementSettings(db) ?: return null
-            if (!settings.spo2Enabled) return null
-            val minutes = settings.spo2IntervalMinutes.takeIf { it > 0 } ?: settings.hrIntervalMinutes
-            return minutes.coerceIn(5, 60)
+            val device = db.deviceDao().currentReal()
+            val isYcbt = device?.deviceType in setOf(
+                com.pulseloop.ring.RingDeviceType.YCBT,
+                com.pulseloop.ring.RingDeviceType.COLMI_SMART_HEALTH,
+            )
+            val minutes = if (isYcbt) {
+                settings.hrIntervalMinutes.takeIf { it > 0 } ?: 60
+            } else {
+                if (!settings.spo2Enabled) return null
+                settings.spo2IntervalMinutes.takeIf { it > 0 } ?: settings.hrIntervalMinutes
+            }
+            return minutes.coerceIn(5, 120)
         }
     }
 
@@ -141,7 +151,12 @@ class ScheduledSpo2Worker(
             client.connectLastKnown()
 
             val connected = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                while (!coordinator.isConnected) delay(500)
+                while (!coordinator.isConnected) {
+                    if (client.state.value.connectionState == RingConnectionState.DISCONNECTED) {
+                        client.connectLastKnown()
+                    }
+                    delay(1000)
+                }
                 true
             } ?: false
             if (!connected) return

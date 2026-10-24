@@ -227,11 +227,24 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
         val highWaters = mutableListOf<Long>()
         var droppedHigh: Long? = selected.filter { it.sourceRaw in EXCLUDED_SOURCES }
             .maxOfOrNull { it.createdAt }
+
+        val estimatedSpo2 = if (kindKey == "spo2" && rows.isNotEmpty()) {
+            val minTs = rows.minOf { it.timestamp }
+            val maxTs = rows.maxOf { it.timestamp }
+            com.pulseloop.service.EstimatedSpo2.estimatedTimestamps(db.measurementDao(), minTs, maxTs)
+        } else emptySet()
+
+        val currentRealDevice = if (kindKey == "resp_rate") db.deviceDao().currentReal() else null
+        val isYcbt = currentRealDevice?.deviceType in setOf(
+            com.pulseloop.ring.RingDeviceType.YCBT,
+            com.pulseloop.ring.RingDeviceType.COLMI_SMART_HEALTH,
+        )
+
         for (row in rows) {
             val instant = Instant.ofEpochMilli(row.timestamp)
             val offset = HealthConnectTypeMappings.zoneOffsetAt(instant, zone)
             val record: Record? = when (kindKey) {
-                "spo2" -> if (HealthConnectTypeMappings.isPlausibleSpO2(row.value)) {
+                "spo2" -> if (HealthConnectTypeMappings.isPlausibleSpO2(row.value) && row.timestamp !in estimatedSpo2) {
                     OxygenSaturationRecord(instant, offset, Percentage(row.value), metadata(row, "spo2", device))
                 } else null
                 "hrv" -> if (HealthConnectTypeMappings.isPlausibleHrvRmssd(row.value)) {
@@ -254,7 +267,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
                         metadata = metadata(row, "glucose", device),
                     )
                 } else null
-                "resp_rate" -> if (HealthConnectTypeMappings.isPlausibleRespRate(row.value)) {
+                "resp_rate" -> if (!isYcbt && HealthConnectTypeMappings.isPlausibleRespRate(row.value)) {
                     RespiratoryRateRecord(
                         time = instant,
                         zoneOffset = offset,

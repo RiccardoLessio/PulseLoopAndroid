@@ -50,6 +50,8 @@ import com.pulseloop.coach.config.MiniMaxModel
 import com.pulseloop.coach.config.OpenRouterModel
 import com.pulseloop.data.DemoDataSeeder
 import com.pulseloop.data.PulseLoopDatabase
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.pulseloop.data.entity.UserGoalEntity
 import com.pulseloop.health.HealthConnectAvailability
 import com.pulseloop.health.HealthConnectPermissions
@@ -1537,6 +1539,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val supportsScheduledSpo2 = ScheduledSpo2Prefs.isSupported(device)
     var cfgAppSpo2 by remember { mutableStateOf(false) }
     var cfgAppSpo2Interval by remember { mutableStateOf(ScheduledSpo2Prefs.DEFAULT_INTERVAL_MINUTES) }
+    var cfgHideEstimatedSpo2 by remember { mutableStateOf(true) }
     var cfgLoaded by remember { mutableStateOf(false) }
     var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
 
@@ -1555,6 +1558,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
         cfgAppSpo2 = scheduledSpo2Prefs.enabled
         cfgAppSpo2Interval = scheduledSpo2Prefs.intervalMinutes
+        cfgHideEstimatedSpo2 = scheduledSpo2Prefs.hideEstimated
         cfgLoaded = true
     }
 
@@ -1630,32 +1634,46 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                             )
                         }
                         // Issue #103: this ring's own SpO₂ is computed from heart rate, so the app
-                        // can run the ring's real spot measurement on the interval instead.
-                        if (cfgSpo2 && supportsScheduledSpo2) {
-                            VitalToggle("Measure SpO₂ from the app", cfgAppSpo2) { cfgAppSpo2 = it }
-                            Text(
-                                "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement on the schedule below, between the ring's own readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            // Independent of the ring's SpO₂ interval: the app starts these runs
-                            // itself, so the ring's limits don't apply (issue #103). Each run is
-                            // ~50 s of red LED, which is what 2–3 h spacing is for.
-                            Text(
-                                if (cfgAppSpo2Interval == 60) "Every hour" else "Every ${cfgAppSpo2Interval / 60} hours",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Slider(
-                                enabled = cfgLoaded,
-                                value = cfgAppSpo2Interval.toFloat(),
-                                onValueChange = {
-                                    cfgAppSpo2Interval = ScheduledSpo2Prefs.sanitizeIntervalMinutes(((it / 60).toInt() * 60).coerceIn(60, 180))
+                        // can run the ring's real spot measurement on the schedule instead.
+                        if (supportsScheduledSpo2) {
+                            VitalToggle("Measure SpO₂ from the app", cfgAppSpo2) {
+                                cfgAppSpo2 = it
+                                cfgSavedMsg = null
+                            }
+                            if (cfgAppSpo2) {
+                                Text(
+                                    "This ring's all-day SpO₂ is estimated from heart rate. When on, PulseLoop starts a real spot measurement on the schedule below, between the ring's own readings, about a minute each, which uses more battery. Android may delay or skip runs while the phone is asleep.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                // Independent of the ring's SpO₂ interval: the app starts these runs
+                                // itself, so the ring's limits don't apply (issue #103). Each run is
+                                // ~50 s of red LED, which is what 2–3 h spacing is for.
+                                Text(
+                                    if (cfgAppSpo2Interval == 60) "Every hour" else "Every ${cfgAppSpo2Interval / 60} hours",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Slider(
+                                    enabled = cfgLoaded,
+                                    value = cfgAppSpo2Interval.toFloat(),
+                                    onValueChange = {
+                                        cfgAppSpo2Interval = ScheduledSpo2Prefs.sanitizeIntervalMinutes(kotlin.math.round(it / 60f).toInt() * 60)
+                                        cfgSavedMsg = null
+                                    },
+                                    valueRange = 60f..180f,
+                                    steps = 1,
+                                )
+                                VitalToggle("Hide estimated SpO₂", cfgHideEstimatedSpo2) {
+                                    cfgHideEstimatedSpo2 = it
                                     cfgSavedMsg = null
-                                },
-                                valueRange = 60f..180f,
-                                steps = 2,
-                            )
+                                }
+                                Text(
+                                    "Display only real spot measurements on charts and vitals cards, hiding the hourly estimates.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     if (supportsStressSetting) {
@@ -1688,8 +1706,9 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                     )
                                 )
                                 coordinator?.applyMeasurementSettings()
-                                scheduledSpo2Prefs.enabled = cfgAppSpo2 && cfgSpo2 && supportsScheduledSpo2
+                                scheduledSpo2Prefs.enabled = cfgAppSpo2 && supportsScheduledSpo2
                                 scheduledSpo2Prefs.intervalMinutes = cfgAppSpo2Interval
+                                scheduledSpo2Prefs.hideEstimated = cfgHideEstimatedSpo2
                                 ScheduledSpo2Worker.reschedule(context.applicationContext)
                                 cfgSavedMsg = if (coordinator?.isConnected == true)
                                     "Saved & sent to ring ✓" else "Saved — will sync on next connect"
@@ -3157,6 +3176,17 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    var currentRealDevice by remember { mutableStateOf<com.pulseloop.data.entity.DeviceEntity?>(null) }
+    LaunchedEffect(Unit) {
+        currentRealDevice = withContext(Dispatchers.IO) {
+            PulseLoopDatabase.getInstance(context).deviceDao().currentReal()
+        }
+    }
+    val isYcbtDevice = currentRealDevice?.deviceType in setOf(
+        com.pulseloop.ring.RingDeviceType.YCBT,
+        com.pulseloop.ring.RingDeviceType.COLMI_SMART_HEALTH,
+    )
+
     SettingsSubScreen(title = "Health Connect", onBack = onBack) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
@@ -3265,15 +3295,22 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                         HealthConnectPermissions.DataTypeRow.RESTING_HEART_RATE to "Resting heart rate",
                     )
                     for ((row, label) in rows) {
+                        val isRespRateOnYcbt = row == HealthConnectPermissions.DataTypeRow.RESPIRATORY_RATE && isYcbtDevice
                         val rowPerms = HealthConnectPermissions.permissionsForRow(row)
-                        val rowGranted = rowPerms.isEmpty() || rowPerms.any { it in granted }
+                        val rowGranted = !isRespRateOnYcbt && (rowPerms.isEmpty() || rowPerms.any { it in granted })
                         Row(
                             Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(label, style = MaterialTheme.typography.bodyMedium)
-                                if (!rowGranted) {
+                                if (isRespRateOnYcbt) {
+                                    Text(
+                                        "Derived from heart rate by current ring — export disabled",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } else if (!rowGranted) {
                                     Text(
                                         "Awaiting permission",
                                         style = MaterialTheme.typography.bodySmall,
@@ -3282,7 +3319,7 @@ fun HealthConnectSettingsScreen(onBack: () -> Unit) {
                                 }
                             }
                             Switch(
-                                checked = prefs.toggleFor(row),
+                                checked = if (isRespRateOnYcbt) false else prefs.toggleFor(row),
                                 enabled = rowGranted,
                                 onCheckedChange = { on ->
                                     store.update { p -> p.withToggleFor(row, on) }

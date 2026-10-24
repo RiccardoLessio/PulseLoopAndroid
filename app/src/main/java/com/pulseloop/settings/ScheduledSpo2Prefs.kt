@@ -34,10 +34,19 @@ class ScheduledSpo2Prefs(context: Context) {
         get() = prefs.getInt(KEY_INTERVAL_MINUTES, DEFAULT_INTERVAL_MINUTES)
         set(value) { prefs.edit().putInt(KEY_INTERVAL_MINUTES, sanitizeIntervalMinutes(value)).apply() }
 
+    /**
+     * Whether to hide estimated hourly SpO₂ (computed by the ring from heart rate) and only
+     * display real spot measurements. Defaults to true.
+     */
+    var hideEstimated: Boolean
+        get() = prefs.getBoolean(KEY_HIDE_ESTIMATED, true)
+        set(value) { prefs.edit().putBoolean(KEY_HIDE_ESTIMATED, value).apply() }
+
     companion object {
         private const val PREFS_NAME = "scheduled_spo2"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_INTERVAL_MINUTES = "interval_minutes"
+        private const val KEY_HIDE_ESTIMATED = "hide_estimated"
 
         /** Options are 60/120/180; 60 is what the app ran at before a choice existed. */
         const val DEFAULT_INTERVAL_MINUTES = 60

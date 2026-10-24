@@ -114,4 +114,23 @@ class ScheduledSpo2SlotsTest {
         assertEquals(at(10, 15), ScheduledSpo2Slots.nextSlot(at(10, 5), 120, 30))
         assertTrue(ScheduledSpo2Slots.isClear(at(10, 15), 30))
     }
+
+    @Test
+    fun `two hour ring grid with two hour app interval lands at odd hours`() {
+        assertEquals(at(11, 0), ScheduledSpo2Slots.nextSlot(at(10, 5), 120, 120))
+        assertEquals(at(13, 0), ScheduledSpo2Slots.nextSlot(at(11, 0), 120, 120))
+        assertTrue(ScheduledSpo2Slots.isClear(at(11, 0), 120))
+        // Late run at 22:25 (delayed from 22:00) is clear of 00:00 ring reading
+        assertTrue(ScheduledSpo2Slots.isClear(at(22, 25), 120))
+        // 23:58 is 2 min before midnight reading => not clear
+        assertFalse(ScheduledSpo2Slots.isClear(at(23, 58), 120))
+    }
+
+    @Test
+    fun `two hour ring grid with hourly app interval lands at half past`() {
+        assertEquals(at(10, 30), ScheduledSpo2Slots.nextSlot(at(10, 5), 60, 120))
+        assertEquals(at(11, 30), ScheduledSpo2Slots.nextSlot(at(10, 30), 60, 120))
+        assertTrue(ScheduledSpo2Slots.isClear(at(10, 30), 120))
+        assertTrue(ScheduledSpo2Slots.isClear(at(11, 30), 120))
+    }
 }

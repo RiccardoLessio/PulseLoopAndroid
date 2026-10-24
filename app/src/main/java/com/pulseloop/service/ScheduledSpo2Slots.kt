@@ -42,7 +42,11 @@ internal object ScheduledSpo2Slots {
         ringIntervalMinutes: Int = intervalMinutes,
     ): ZonedDateTime {
         val interval = intervalMinutes * 60
-        val half = ringIntervalMinutes * 60 / 2
+        val half = when {
+            ringIntervalMinutes == 120 && intervalMinutes == 120 -> 60 * 60
+            ringIntervalMinutes >= 60 -> 30 * 60
+            else -> ringIntervalMinutes * 60 / 2
+        }
         val secs = now.toLocalTime().toSecondOfDay()
         val k = if (secs < half) 0 else (secs - half) / interval + 1
         val slot = half + k * interval
