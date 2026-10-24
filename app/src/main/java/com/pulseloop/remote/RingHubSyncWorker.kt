@@ -59,10 +59,13 @@ class RingHubSyncWorker(
                     appVersion = BuildConfig.VERSION_NAME,
                     send = { client.postBatch(it) },
                 ).run()
-                val summary = if (result.totalRows == 0) "Nessun dato nuovo"
-                else "Inviate ${result.totalRows} righe in ${result.requests} richieste"
+                val summary = result.statusLine()
+                if (result.pending.isNotEmpty()) Log.w(TAG, "not acknowledged by the server (older ring-hub?): ${result.pending}")
+                result.rejected.forEach { (stream, reason) -> Log.w(TAG, "${stream.wireName} rejected, skipped this pass: $reason") }
                 store.update {
-                    it.copy(lastAttemptAt = started, lastSuccessAt = System.currentTimeMillis(), lastOk = true, lastStatus = summary)
+                    it.copy(lastAttemptAt = started, lastSuccessAt = System.currentTimeMillis(),
+                        // Reached the server, but some rows are still waiting: shown in the error colour.
+                        lastOk = result.pending.isEmpty() && result.rejected.isEmpty(), lastStatus = summary)
                 }
                 Log.i(TAG, "pass done: $summary ${result.rows}")
                 pullContext(client, db)
@@ -91,17 +94,27 @@ class RingHubSyncWorker(
      * predates v0.2 answers 404 and the pass still counts as a success.
      */
     private suspend fun pullContext(client: RingHubClient, db: PulseLoopDatabase) {
-        try {
+        // Zones and places are independent: one failing (404 on an old server, a shape the app
+        // can't decode) must not skip the other.
+        pullPart("zones") {
             val zoneDao = db.zoneDao()
             for (remote in client.zones()) {
                 val local = zoneDao.byId(remote.id)
                 if (local == null || remote.updatedAt > local.updatedAt) zoneDao.upsert(remote.toEntity())
             }
+        }
+        pullPart("places") {
             com.pulseloop.context.ContextPrefs.get(applicationContext).savePlaces(client.places())
+        }
+    }
+
+    private suspend fun pullPart(what: String, block: suspend () -> Unit) {
+        try {
+            block()
         } catch (e: RingHubException) {
-            Log.i(TAG, "context pull skipped: ${e.message}")
+            Log.i(TAG, "$what pull skipped: ${e.message}")
         } catch (e: kotlinx.serialization.SerializationException) {
-            Log.i(TAG, "context pull skipped: ${e.message}")
+            Log.w(TAG, "$what pull skipped: ${e.message}")
         }
     }
 

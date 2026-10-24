@@ -16,6 +16,7 @@ import com.pulseloop.data.entity.MeasurementEntity
 import com.pulseloop.data.entity.SleepSessionEntity
 import com.pulseloop.data.entity.SleepStageBlockEntity
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -100,11 +101,32 @@ class RingHubSyncTest {
         )
     }
 
-    private fun sync(source: RingHubSource, marks: RingHubWatermarkStore, sent: MutableList<RingHubBatch>, max: Int = 2000, failAfter: Int = Int.MAX_VALUE) =
+    private fun sync(
+        source: RingHubSource,
+        marks: RingHubWatermarkStore,
+        sent: MutableList<RingHubBatch>,
+        max: Int = 2000,
+        failAfter: Int = Int.MAX_VALUE,
+        reply: (RingHubBatch) -> RingHubIngestResult = ::ackAll,
+    ) =
         RingHubSync(source, marks, "test", send = {
             if (sent.size >= failAfter) throw RingHubException(RingHubException.Kind.UNREACHABLE, null, "PC off")
             sent += it
+            reply(it)
         }, maxRowsPerRequest = max, now = { 5_000_000 })
+
+    /** A v0.2 server's reply: every list in the body is counted, `received` = its size. */
+    private fun ackAll(batch: RingHubBatch): RingHubIngestResult {
+        val obj = ringHubJson.parseToJsonElement(ringHubJson.encodeToString(RingHubBatch.serializer(), batch)).jsonObject
+        return RingHubIngestResult(counts = obj.filterValues { it is JsonArray }.mapValues { RingHubTableCounts(received = it.value.jsonArray.size) })
+    }
+
+    /** A v0.1 server's reply: it drops the v0.2 lists (`extra="ignore"`), so they never appear in `counts`. */
+    private fun ackV01(batch: RingHubBatch): RingHubIngestResult {
+        val v02 = RingHubStream.entries.filter { it.sinceV02 }.map { it.wireName }.toSet()
+        val full = ackAll(batch)
+        return full.copy(counts = full.counts.filterKeys { it !in v02 })
+    }
 
     @Test
     fun `first pass sends every stream in chunks and advances each watermark`() = runTest {
@@ -333,5 +355,93 @@ class RingHubSyncTest {
             """[{"id":"z","name":"Palestra","category":"gym","latitude":1.0,"longitude":2.0,"radiusMeters":120.0,"createdAt":1,"updatedAt":2,"deletedAt":null}]""",
         )
         assertEquals(null, parsed.single().deletedAt)
+    }
+
+    @Test
+    fun `a v0_1 server that ignores the v0_2 lists does not move their watermarks`() = runTest {
+        val source = MemorySource().apply { addContext(); measurements += hr("m1", createdAt = 1_000) }
+        val marks = MemoryWatermarks()
+        val result = sync(source, marks, mutableListOf(), reply = ::ackV01).run()
+
+        assertEquals(1_000L, marks.marks[RingHubStream.MEASUREMENTS])
+        assertEquals(1_000L, marks.marks[RingHubStream.DEVICES])
+        val v02 = RingHubStream.entries.filter { it.sinceV02 }
+        for (stream in v02) assertNull(stream.name, marks.marks[stream])
+        assertEquals(v02.toSet(), result.pending)
+        assertTrue(result.statusLine(), "Server non aggiornato: alcuni dati in attesa" in result.statusLine())
+
+        // Server updated: the same rows go again and the watermarks move.
+        val sent = mutableListOf<RingHubBatch>()
+        val after = sync(source, marks, sent).run()
+        assertTrue(after.pending.isEmpty())
+        assertEquals(listOf("zone-home"), sent.flatMap { it.zones }.map { it.id })
+        for (stream in v02) assertEquals(stream.name, T, marks.marks[stream])
+        assertFalse("Server non aggiornato" in after.statusLine())
+    }
+
+    @Test
+    fun `fewer rows received than sent keeps the watermark`() = runTest {
+        val source = MemorySource().apply { device = null; (1..3).forEach { measurements += hr("m$it", createdAt = it * 1_000L) } }
+        val marks = MemoryWatermarks()
+        val short = { b: RingHubBatch -> ackAll(b).let { r -> r.copy(counts = r.counts + ("measurements" to RingHubTableCounts(received = 1))) } }
+        val result = sync(source, marks, mutableListOf(), reply = short).run()
+        assertNull(marks.marks[RingHubStream.MEASUREMENTS])
+        assertEquals(setOf(RingHubStream.MEASUREMENTS), result.pending)
+    }
+
+    @Test
+    fun `a rejected v0_2 stream is skipped without blocking the later ones`() = runTest {
+        val source = MemorySource().apply { device = null; addContext() }
+        val marks = MemoryWatermarks()
+        val sent = mutableListOf<RingHubBatch>()
+        val result = RingHubSync(source, marks, "test", send = {
+            if (it.diaryEntries.isNotEmpty()) throw RingHubException(RingHubException.Kind.REJECTED, 422, "HTTP 422: mood")
+            sent += it
+            ackAll(it)
+        }, now = { 5_000_000 }).run()
+
+        assertNull(marks.marks[RingHubStream.DIARY_ENTRIES])
+        assertEquals(setOf(RingHubStream.DIARY_ENTRIES), result.rejected.keys)
+        for (stream in listOf(RingHubStream.PHONE_USAGE_HOURLY, RingHubStream.ACTIVITY_TRANSITIONS, RingHubStream.ZONES, RingHubStream.LOCATION_POINTS)) {
+            assertEquals(stream.name, T, marks.marks[stream])
+        }
+        assertTrue("diaryEntries" in result.statusLine())
+    }
+
+    @Test
+    fun `an outage during a v0_2 stream still stops the pass`() = runTest {
+        val source = MemorySource().apply { device = null; addContext() }
+        val error = runCatching {
+            RingHubSync(source, MemoryWatermarks(), "test", send = {
+                if (it.diaryEntries.isNotEmpty()) throw RingHubException(RingHubException.Kind.UNREACHABLE, null, "PC off")
+                ackAll(it)
+            }, now = { 5_000_000 }).run()
+        }.exceptionOrNull()
+        assertTrue(error is RingHubException && error.retryable)
+    }
+
+    @Test
+    fun `zones and places decode from a real ring-hub response`() {
+        // Captured from ring-hub v0.2 (GET /api/v1/zones and /places after a dashboard promotion).
+        val zonesJson = """[{"id":"zone-home","name":"Casa","category":"home","latitude":45.07,"longitude":7.68,"radiusMeters":150.0,"createdAt":1792485015000,"updatedAt":1792485015000,"deletedAt":null},{"id":"zone-old","name":"Vecchia","category":"home","latitude":45.07,"longitude":7.68,"radiusMeters":150.0,"createdAt":1792485015000,"updatedAt":1792485020000,"deletedAt":1792485020000},{"id":"zone-62885c6d-b8c1-46c9-a9bc-fdc8c8e68a5e","name":"Palestra","category":"gym","latitude":45.06000680799706,"longitude":7.700021073823404,"radiusMeters":120.0,"createdAt":1792846210577,"updatedAt":1792846210577,"deletedAt":null}]"""
+        val placesJson = """[{"id":1,"name":"Casa","autoLabel":null,"zoneId":"zone-home","latitude":45.07,"longitude":7.68,"visitCount":5,"totalMinutes":2905},{"id":2,"name":"Lavoro","autoLabel":"Lavoro","zoneId":null,"latitude":45.080000389255666,"longitude":7.660000234601298,"visitCount":5,"totalMinutes":2700},{"id":4,"name":"Palestra","autoLabel":null,"zoneId":"zone-62885c6d-b8c1-46c9-a9bc-fdc8c8e68a5e","latitude":45.06000680799706,"longitude":7.700021073823404,"visitCount":2,"totalMinutes":120}]"""
+        val zones = ringHubJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ZoneDTO.serializer()), zonesJson)
+        assertEquals(listOf("zone-home", "zone-old", "zone-62885c6d-b8c1-46c9-a9bc-fdc8c8e68a5e"), zones.map { it.id })
+        assertEquals(1_792_485_020_000L, zones[1].deletedAt)
+        assertEquals(1_792_846_210_577L, zones[2].updatedAt)
+        val places = ringHubJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(com.pulseloop.context.AutoPlace.serializer()), placesJson)
+        assertEquals("zone-62885c6d-b8c1-46c9-a9bc-fdc8c8e68a5e", places.last().zoneId)
+
+        // The v0.2.0 server's float epochs are what broke the pull: this must keep failing loudly
+        // (the worker logs and skips) rather than be silently mis-decoded.
+        val floatJson = zonesJson.replace("1792485015000,", "1792485015000.0,")
+        assertTrue(runCatching { ringHubJson.decodeFromString(kotlinx.serialization.builtins.ListSerializer(ZoneDTO.serializer()), floatJson) }.isFailure)
+    }
+
+    @Test
+    fun `ingest reply decodes from a real ring-hub response`() {
+        val reply = """{"ok":true,"ingestId":3,"deviceId":"d","counts":{"devices":{"received":0,"inserted":0,"updated":0,"unchanged":0,"skipped":0,"removed":0},"zones":{"received":2,"inserted":1,"updated":0,"unchanged":1,"skipped":0,"removed":0}},"watermark":{"ingestId":3,"serverTime":"2026-10-24T12:50:10Z","latest":{"devices":1792846210424,"measurements":null,"zones":1792846210577}}}"""
+        val parsed = ringHubJson.decodeFromString(RingHubIngestResult.serializer(), reply)
+        assertEquals(2, parsed.counts["zones"]!!.received)
     }
 }
