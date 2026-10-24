@@ -116,8 +116,14 @@ class DiaryLogicTest {
         val base = DiaryLogic.empty(day, 1L).copy(sport = true, screensInBed = true)
         listOf(
             base.copy(lateCaffeine = false), base.copy(alcohol = true), base.copy(lateMeal = false),
-            base.copy(supplements = emptyList()), base.copy(mood = 3), base.copy(morningMood = 4),
-            base.copy(morningFeeling = 2), base.copy(caffeine = true), base.copy(perceivedStress = 2), base.copy(illness = false),
+            base.copy(supplements = emptyList()), base.copy(mood = 3),
+            base.copy(caffeine = true), base.copy(perceivedStress = 2), base.copy(illness = false),
         ).forEach { assertTrue(DiaryLogic.anyAnswered(it)) }
+    }
+
+    @Test
+    fun `morning check alone does not make the day compiled`() {
+        val morningOnly = DiaryLogic.empty(day, 1L).copy(morningMood = 5, morningFeeling = 5)
+        assertFalse(DiaryLogic.anyAnswered(morningOnly))
     }
 }

@@ -111,8 +111,9 @@ object DiaryLogic {
      * Today). Auto-derived fields (sport from activity recognition/workouts, screens in bed from
      * UsageStats) and the mere existence of a row never count.
      */
+    /** The day's diary counts as compiled only from evening answers or supplements; the morning check doesn't. */
     fun anyAnswered(e: DiaryEntryEntity?): Boolean =
-        eveningAnswered(e) || e?.morningMood != null || e?.morningFeeling != null || e?.supplements != null
+        eveningAnswered(e) || e?.supplements != null
 
     fun isValidTime(text: String?): Boolean = text == null || HHMM.matches(text)
 
