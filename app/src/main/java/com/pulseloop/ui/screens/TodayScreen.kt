@@ -6,6 +6,7 @@ import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -15,6 +16,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pulseloop.data.PulseLoopDatabase
+import com.pulseloop.diary.DiaryLogic
 import com.pulseloop.service.MetricKind
 import com.pulseloop.service.MetricZone
 import com.pulseloop.service.VitalsThresholdEngine
@@ -28,6 +31,7 @@ import com.pulseloop.ui.dashboard.HiddenMetricsTray
 import com.pulseloop.ui.dashboard.MetricPrefsStore
 import com.pulseloop.ui.dashboard.MetricScope
 import com.pulseloop.ui.dashboard.ReorderDoneBar
+import com.pulseloop.ui.dashboard.TodayLayout
 import com.pulseloop.ui.dashboard.rememberDashboardEditState
 import com.pulseloop.util.Formats
 import com.pulseloop.ui.theme.PulseColors
@@ -94,8 +98,16 @@ fun TodayScreen(
     val prefs by prefsStore.prefs.collectAsState()
     val editState = rememberDashboardEditState(MetricScope.TODAY, prefsStore)
 
+    // Fork v0.3.1: read once per visit, not live. A live read would move the card to the bottom
+    // under the user's finger on the first chip tap; it goes there on the next visit instead.
+    val diaryCompiled by produceState(false) {
+        val date = DiaryLogic.diaryDateFor(System.currentTimeMillis()).toString()
+        value = DiaryLogic.anyAnswered(PulseLoopDatabase.getInstance(context).diaryEntryDao().byDate(date))
+    }
+
     val supported: (DashboardCard) -> Boolean = { card ->
         when (card) {
+            DashboardCard.DIARY,
             DashboardCard.ACTIVITY, DashboardCard.SLEEP,
             DashboardCard.HEART_RATE, DashboardCard.SPO2 -> true
             DashboardCard.HRV -> vitals.supportsHrv
@@ -114,13 +126,22 @@ fun TodayScreen(
         val base = if (editState.editing) editState.liveOrder
             else prefsStore.resolvedOrder(visibleKeys, DashboardCard.todayDefault.map { it.key }, MetricScope.TODAY)
                 .mapNotNull { DashboardCard.fromKey(it) }
-        base.filter { it.key in visibleKeys }
+        val visible = base.filter { it.key in visibleKeys }
+        if (editState.editing) visible
+        else TodayLayout.displayOrder(visible, diaryCompiled, prefs.todayDiaryToEndWhenCompiled)
     }
     val hiddenCards = allSupported.filter { prefs.isHidden(it, MetricScope.TODAY) }
 
     // Dispatch a card id to its tile composable (order/visibility decided above).
     val todayCardFor: @Composable (DashboardCard, Modifier) -> Unit = { card, m ->
         when (card) {
+            // "Apri diario" switches to the Diario tab.
+            DashboardCard.DIARY -> TodayDiaryCard(onOpenDiary = {
+                navController?.navigate(com.pulseloop.ui.DIARY_TAB_ROUTE) {
+                    popUpTo(navController.graph.startDestinationId)
+                    launchSingleTop = true
+                }
+            })
             DashboardCard.ACTIVITY -> ActivityTileFor(state, units, m) { navController?.navigate("activity") }
             DashboardCard.SLEEP -> SleepTileFor(sleep, m) { navController?.navigate("sleep") }
             DashboardCard.HEART_RATE -> ChartTile(cards.getValue(MetricKind.HEART_RATE), vitals.hrSamples, m) { navController?.navigate("vitals/hr") }
@@ -165,16 +186,6 @@ fun TodayScreen(
                 }
             }
 
-            // Fork v0.3: one-tap diary near the top; "Apri diario" switches to the Diario tab.
-            item {
-                TodayDiaryCard(onOpenDiary = {
-                    navController?.navigate(com.pulseloop.ui.DIARY_TAB_ROUTE) {
-                        popUpTo(navController.graph.startDestinationId)
-                        launchSingleTop = true
-                    }
-                })
-            }
-
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     if (editState.editing) ReorderDoneBar { editState.exit() }
@@ -182,9 +193,31 @@ fun TodayScreen(
                 }
             }
 
-            val rows = visibleOrdered.chunked(2)
+            if (editState.editing) {
+                item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Sposta il diario in fondo quando è compilato",
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Switch(
+                            checked = prefs.todayDiaryToEndWhenCompiled,
+                            onCheckedChange = { prefsStore.setDiaryToEndWhenCompiled(it) },
+                        )
+                    }
+                }
+            }
+
+            val rows = TodayLayout.rows(visibleOrdered)
             items(rows.size) { rowIndex ->
                 val row = rows[rowIndex]
+                if (row.singleOrNull() == DashboardCard.DIARY) {
+                    EditableCard(editState, DashboardCard.DIARY, Modifier.fillMaxWidth()) {
+                        todayCardFor(DashboardCard.DIARY, Modifier.fillMaxWidth())
+                    }
+                    return@items
+                }
                 // IntrinsicSize.Min + fillMaxHeight is what keeps the grid uniform now that tiles
                 // size to their content: the row takes the height its tallest tile actually needs,
                 // and the other tile stretches to match. Without it a tall Sleep tile would sit

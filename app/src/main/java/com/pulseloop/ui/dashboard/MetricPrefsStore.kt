@@ -34,6 +34,9 @@ class MetricPrefsStore internal constructor(private val prefsStore: SharedPrefer
 
     fun setOrder(order: List<String>, scope: MetricScope) = update(current.withOrder(order, scope))
 
+    fun setDiaryToEndWhenCompiled(enabled: Boolean) =
+        update(current.copy(todayDiaryToEndWhenCompiled = enabled))
+
     fun resolvedOrder(visible: Set<String>, defaultOrder: List<String>, scope: MetricScope): List<String> =
         current.resolvedOrder(visible, defaultOrder, scope)
 

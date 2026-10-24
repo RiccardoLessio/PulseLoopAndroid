@@ -18,6 +18,8 @@ data class MetricPrefs(
     val todayHiddenMetrics: Set<String> = emptySet(),   // Today scope
     val vitalsOrder: List<String> = emptyList(),
     val todayOrder: List<String> = emptyList(),
+    /** Fork v0.3.1: a compiled "Diario di oggi" goes below every other Today card. */
+    val todayDiaryToEndWhenCompiled: Boolean = true,
 ) {
     fun isHidden(card: DashboardCard, scope: MetricScope): Boolean =
         hiddenSet(scope).contains(card.key)
