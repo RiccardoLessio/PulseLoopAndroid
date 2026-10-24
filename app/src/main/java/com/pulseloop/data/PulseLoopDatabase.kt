@@ -526,12 +526,25 @@ abstract class PulseLoopDatabase : RoomDatabase() {
         /**
          * v28 -> v29: `device_measurement_configs.temperatureIntervalMinutes`. The Colmi
          * temperature write used to hardcode 30 minutes; it is a setting now, defaulting to 5.
+         *
+         * Existing Colmi (R02-family, which includes the R09) configs are moved onto this fork's
+         * defaults once, here: temperature on at 5 minutes, and all-day HR from 30 to 5 minutes —
+         * only when it is still at 30, so any other interval the user picked stays. Every connect
+         * pushes the persisted config to the ring, so the next connect applies it. Touches only
+         * that config row; no history is read or deleted.
          */
         private val MIGRATION_28_29 = object : Migration(28, 29) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE `device_measurement_configs` ADD COLUMN `temperatureIntervalMinutes` INTEGER NOT NULL DEFAULT 5")
+                db.execSQL(COLMI_DEFAULTS_SQL, arrayOf<Any>(System.currentTimeMillis()))
             }
         }
+
+        internal const val COLMI_DEFAULTS_SQL =
+            "UPDATE `device_measurement_configs` SET " +
+                "`hrIntervalMinutes` = CASE WHEN `hrIntervalMinutes` = 30 THEN 5 ELSE `hrIntervalMinutes` END, " +
+                "`temperatureEnabled` = 1, `temperatureIntervalMinutes` = 5, `updatedAt` = ? " +
+                "WHERE `deviceId` IN (SELECT `id` FROM `devices` WHERE `deviceTypeRaw` = 'COLMI_R02' OR `wearableModelID` = 'colmi-r09')"
 
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
