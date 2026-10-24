@@ -208,8 +208,30 @@ class AdaptiveStateMachineTest {
         val r = step(escalated(), high(t0 + 40 * min))
         assertEquals(COOLDOWN, r.memory.state)
         assertEquals(Reason.INTERRUPTED, r.transitions.single().reason)
-        // Only maxAccrual of the dead gap is charged to the budget.
-        assertEquals(3 * min, r.memory.budgetUsedMs)
+        // Only maxAccrual (= staleMs, 5 min) of the dead gap is charged to the budget.
+        assertEquals(5 * min, r.memory.budgetUsedMs)
+    }
+
+    @Test
+    fun `a slow but live gap is charged in full to the budget`() {
+        // 4 min between samples: under staleMs, so the episode goes on and all of it counts.
+        val r = step(escalated(), high(t0 + 5 * min))
+        assertEquals(ESCALATED, r.memory.state)
+        assertEquals(4 * min, r.memory.budgetUsedMs)
+        // Exactly staleMs is still live and charged in full.
+        val atStale = step(escalated(), high(t0 + 6 * min))
+        assertEquals(ESCALATED, atStale.memory.state)
+        assertEquals(5 * min, atStale.memory.budgetUsedMs)
+    }
+
+    @Test
+    fun `unknown steps keep an episode only until the cap`() {
+        var m = escalated()
+        val start = t0 + min
+        for (i in 1..19) m = step(m, s(start + i * min, hr = 110, steps10 = null, steps2 = null)).memory
+        assertEquals(ESCALATED, m.state)
+        val r = step(m, s(start + 20 * min, hr = 110, steps10 = null, steps2 = null))
+        assertEquals(Reason.CAP, r.transitions.single().reason)
     }
 
     // --- COOLDOWN ---------------------------------------------------------------------------

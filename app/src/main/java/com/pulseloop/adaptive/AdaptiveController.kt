@@ -163,19 +163,21 @@ object AdaptiveController {
         val baselineHrv = readings(read.baselineReadings("HRV", now - READ_BACK_MS))
         val buckets = read.buckets(now - BUCKET_READ_BACK_MS).map { AdaptiveInputs.StepBucket(it.startEpoch, it.steps) }
         val steps = live?.steps.orEmpty()
+        // Buckets are complete only up to the last finished ring sync (AdaptiveInputs KDoc).
+        val stepsKnownUntil = db.deviceDao().currentReal()?.lastFullSyncAt
         val battery = live?.battery ?: read.latestBattery(now - BATTERY_MAX_AGE_MS)
         val bedtime = QuietHoursPrefs.isZenTrackingActive(context) && ZenModeTracker.isZenModeActive(context)
 
         val base = AdaptiveInputs.sample(
-            now = now, hr = hr, stress = stress, hrv = hrv, buckets = buckets, live = steps,
+            now = now, hr = hr, stress = stress, hrv = hrv, buckets = buckets, live = steps, stepsKnownUntil = stepsKnownUntil,
             battery = battery, lastSleepEnd = read.lastSleepEnd(), bedtimeActive = bedtime,
         )
         // The reading under evaluation is not part of its own baseline.
         val currentHrAt = AdaptiveInputs.latestFresh(hr, now, AdaptiveInputs.HR_MAX_AGE_MS)?.at
         val currentHrvAt = AdaptiveInputs.latestFresh(hrv, now, AdaptiveInputs.SLOW_VITAL_MAX_AGE_MS)?.at
         return base.copy(
-            restingHrMedian = AdaptiveInputs.restingHrMedian(baselineHr.filter { it.at != currentHrAt }, buckets, steps, now),
-            hrvMedian = AdaptiveInputs.hrvMedian(baselineHrv, buckets, steps, now, excludeAt = currentHrvAt),
+            restingHrMedian = AdaptiveInputs.restingHrMedian(baselineHr.filter { it.at != currentHrAt }, buckets, steps, now, stepsKnownUntil),
+            hrvMedian = AdaptiveInputs.hrvMedian(baselineHrv, buckets, steps, now, stepsKnownUntil, excludeAt = currentHrvAt),
         )
     }
 }

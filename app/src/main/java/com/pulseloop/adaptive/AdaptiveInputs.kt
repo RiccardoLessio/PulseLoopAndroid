@@ -12,6 +12,12 @@ import java.time.ZoneId
  * sees the ring's cumulative day count ([LiveSteps]), which can. So: live totals when they bracket
  * the window, otherwise every bucket that **overlaps** the window counts in full — conservative,
  * it can only make a window look less restful, never more.
+ *
+ * Buckets only speak for time the ring has already synced: "no row" means 0 steps up to the
+ * last completed sync (`stepsKnownUntil`, the device's `lastFullSyncAt`) and *unknown* after it.
+ * A window reaching past that point returns null, which [AdaptiveStateMachine.isRest] treats as
+ * not-rest and [AdaptiveStateMachine.isMoving] as no evidence — so a stale bucket table can
+ * neither fake rest nor end an escalation; the cap and the daily budget still bound it.
  */
 object AdaptiveInputs {
 
@@ -24,6 +30,8 @@ object AdaptiveInputs {
 
     const val BUCKET_MS = 15 * 60_000L
     private const val LIVE_BRACKET_SLACK_MS = 90_000L
+    /** How far past the last completed sync a bucket window may reach and still count as known. */
+    const val STEPS_SYNC_SLACK_MS = 90_000L
     const val REST_HR_WINDOW_MS = 3 * 3_600_000L
     const val REST_HR_MIN_SAMPLES = 6
     const val HRV_BASELINE_COUNT = 6
@@ -43,27 +51,29 @@ object AdaptiveInputs {
         return if (s.size % 2 == 1) s[mid] else (s[mid - 1] + s[mid]) / 2.0
     }
 
-    /** Steps in [from, to), or null when nothing can say. */
-    fun stepsInWindow(buckets: List<StepBucket>, live: List<LiveSteps>, from: Long, to: Long): Int? {
+    /** Steps in [from, to), or null when nothing can say (see the class KDoc for [stepsKnownUntil]). */
+    fun stepsInWindow(buckets: List<StepBucket>, live: List<LiveSteps>, from: Long, to: Long, stepsKnownUntil: Long?): Int? {
         val before = live.lastOrNull { it.at <= from + LIVE_BRACKET_SLACK_MS && it.at >= from - LIVE_BRACKET_SLACK_MS * 2 }
         val after = live.lastOrNull { it.at <= to && it.at >= to - LIVE_BRACKET_SLACK_MS }
         if (before != null && after != null && after.at > before.at && after.total >= before.total) {
             return after.total - before.total
         }
-        // Buckets: rows exist only for intervals with steps, so "no row" over a synced span is 0.
+        // Buckets: rows exist only for intervals with steps, so "no row" over a synced span is 0 —
+        // but only a synced one: past the last completed sync nothing is known yet.
+        if (stepsKnownUntil == null || to > stepsKnownUntil + STEPS_SYNC_SLACK_MS) return null
         return buckets.filter { it.start < to && it.start + it.durationMs > from }.sumOf { it.steps }
     }
 
-    fun restingHrMedian(hr: List<Reading>, buckets: List<StepBucket>, live: List<LiveSteps>, now: Long): Double? {
+    fun restingHrMedian(hr: List<Reading>, buckets: List<StepBucket>, live: List<LiveSteps>, now: Long, stepsKnownUntil: Long?): Double? {
         val resting = hr.filter { it.at in (now - REST_HR_WINDOW_MS)..now }
-            .filter { (stepsInWindow(buckets, live, it.at - 10 * 60_000L, it.at) ?: Int.MAX_VALUE) <= 10 }
+            .filter { (stepsInWindow(buckets, live, it.at - 10 * 60_000L, it.at, stepsKnownUntil) ?: Int.MAX_VALUE) <= 10 }
         if (resting.size < REST_HR_MIN_SAMPLES) return null
         return median(resting.map { it.value })
     }
 
-    fun hrvMedian(hrv: List<Reading>, buckets: List<StepBucket>, live: List<LiveSteps>, now: Long, excludeAt: Long? = null): Double? {
+    fun hrvMedian(hrv: List<Reading>, buckets: List<StepBucket>, live: List<LiveSteps>, now: Long, stepsKnownUntil: Long?, excludeAt: Long? = null): Double? {
         val resting = hrv.filter { it.at in (now - HRV_LOOKBACK_MS)..now && it.at != excludeAt }
-            .filter { (stepsInWindow(buckets, live, it.at - 10 * 60_000L, it.at) ?: Int.MAX_VALUE) <= 10 }
+            .filter { (stepsInWindow(buckets, live, it.at - 10 * 60_000L, it.at, stepsKnownUntil) ?: Int.MAX_VALUE) <= 10 }
             .sortedByDescending { it.at }
             .take(HRV_BASELINE_COUNT)
         if (resting.size < HRV_BASELINE_MIN) return null
@@ -100,6 +110,7 @@ object AdaptiveInputs {
         hrv: List<Reading>,
         buckets: List<StepBucket>,
         live: List<LiveSteps>,
+        stepsKnownUntil: Long?,
         battery: Int?,
         lastSleepEnd: Long?,
         bedtimeActive: Boolean,
@@ -108,16 +119,16 @@ object AdaptiveInputs {
         val latestHr = latestFresh(hr, now, HR_MAX_AGE_MS)
         val latestStress = latestFresh(stress, now, SLOW_VITAL_MAX_AGE_MS)
         val latestHrv = latestFresh(hrv, now, SLOW_VITAL_MAX_AGE_MS)
-        val steps30 = stepsInWindow(buckets, live, now - 30 * 60_000L, now)
+        val steps30 = stepsInWindow(buckets, live, now - 30 * 60_000L, now, stepsKnownUntil)
         return AdaptiveSample(
             at = now,
             hr = latestHr?.value?.toInt(),
-            restingHrMedian = restingHrMedian(hr.filter { it.at != latestHr?.at }, buckets, live, now),
+            restingHrMedian = restingHrMedian(hr.filter { it.at != latestHr?.at }, buckets, live, now, stepsKnownUntil),
             stress = latestStress?.value?.toInt(),
             hrv = latestHrv?.value?.toInt(),
-            hrvMedian = hrvMedian(hrv, buckets, live, now, excludeAt = latestHrv?.at),
-            stepsPrev10 = stepsInWindow(buckets, live, now - 10 * 60_000L, now),
-            stepsPrev2 = stepsInWindow(buckets, live, now - 2 * 60_000L, now),
+            hrvMedian = hrvMedian(hrv, buckets, live, now, stepsKnownUntil, excludeAt = latestHrv?.at),
+            stepsPrev10 = stepsInWindow(buckets, live, now - 10 * 60_000L, now, stepsKnownUntil),
+            stepsPrev2 = stepsInWindow(buckets, live, now - 2 * 60_000L, now, stepsKnownUntil),
             asleep = asleep(now, lastSleepEnd, bedtimeActive, steps30, zone),
             batteryPercent = battery,
         )

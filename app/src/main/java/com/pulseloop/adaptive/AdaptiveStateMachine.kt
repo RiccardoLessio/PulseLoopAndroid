@@ -48,8 +48,13 @@ data class AdaptiveConfig(
     val restMaxSteps10: Int = 10,
     /** An ESCALATED episode with no sample for this long was interrupted (service killed). */
     val staleMs: Long = 5 * 60_000L,
-    /** Longest gap between two samples that still counts towards the daily budget. */
-    val maxAccrualMs: Long = 3 * 60_000L,
+    /**
+     * Longest gap between two samples that still counts towards the daily budget. Equal to
+     * [staleMs]: every gap the episode survives (≤ staleMs, link still held) is charged in full,
+     * so a slow spot cycle (HRV + stress every 3 min, a retried spot) no longer under-counts; a
+     * longer gap ends the episode as interrupted and is charged only up to this.
+     */
+    val maxAccrualMs: Long = 5 * 60_000L,
     val suppressedLogIntervalMs: Long = 30 * 60_000L,
 )
 
