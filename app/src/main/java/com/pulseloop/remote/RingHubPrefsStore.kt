@@ -70,6 +70,16 @@ class RingHubPrefsStore internal constructor(private val prefsStore: SharedPrefe
         }
     }
 
+    /**
+     * "Reinvia tutti i dati": forget every stream watermark (v0.1 and v0.2+ context streams share
+     * one map; "pending" marks are per-pass and in-memory, so they die with it) and flag the status.
+     * Touches no Room data. The caller enqueues the sync.
+     */
+    fun resetForResend() {
+        clearWatermarks()
+        update { it.copy(lastOk = null, lastStatus = "Reinvio completo richiesto") }
+    }
+
     private fun load(): RingHubPrefs {
         val raw = prefsStore.getString(KEY_PREFS, null) ?: return RingHubPrefs()
         return try { json.decodeFromString(RingHubPrefs.serializer(), raw) } catch (_: Exception) { RingHubPrefs() }
@@ -84,6 +94,9 @@ class RingHubPrefsStore internal constructor(private val prefsStore: SharedPrefe
         private const val FILE = "ringhub_sync"
         private const val KEY_PREFS = "prefs"
         private const val KEY_WATERMARKS = "watermarks"
+
+        /** True when [new] replaces a previously configured, different server (not a first setup). */
+        fun isServerChange(stored: String, new: String): Boolean = stored.isNotBlank() && stored != new
 
         @Volatile private var instance: RingHubPrefsStore? = null
 

@@ -9,12 +9,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,6 +56,8 @@ fun RingHubSettingsScreen(onBack: () -> Unit) {
     var token by remember { mutableStateOf(tokenStore.token) }
     var testMessage by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
+    var confirmResend by remember { mutableStateOf(false) }
+    var newServerPrompt by remember { mutableStateOf(false) }
     val urlProblem = RingHubClient.validate(url)
 
     /** Persist the typed URL and token; returns false when the URL can't be used. */
@@ -61,9 +65,37 @@ fun RingHubSettingsScreen(onBack: () -> Unit) {
         if (urlProblem != null) return false
         val normalized = RingHubClient.normalize(url) ?: return false
         tokenStore.token = token
+        if (RingHubPrefsStore.isServerChange(store.current.serverUrl, normalized)) newServerPrompt = true
         store.update { it.copy(serverUrl = normalized) }
         url = normalized
         return true
+    }
+
+    fun resendAll() {
+        store.resetForResend()
+        RingHubSyncWorker.enqueue(context, delaySeconds = 0)
+        testMessage = "Reinvio completo avviato"
+    }
+
+    if (confirmResend || newServerPrompt) {
+        val isNew = newServerPrompt
+        val dismiss = { confirmResend = false; newServerPrompt = false }
+        AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(if (isNew) "Nuovo server: vuoi reinviare tutti i dati?" else "Reinvia tutti i dati") },
+            text = {
+                Text(
+                    (if (isNew) "Hai cambiato l'indirizzo del server. " else "") +
+                        "Verrà reinviato al server configurato tutto lo storico salvato sul telefono. " +
+                        "È utile dopo aver spostato o azzerato il server. È sicuro: il server elimina i " +
+                        "duplicati tramite id. Può richiedere del tempo e consumare dati.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { dismiss(); resendAll() }) { Text("Reinvia") }
+            },
+            dismissButton = { TextButton(onClick = dismiss) { Text(if (isNew) "Non ora" else "Annulla") } },
+        )
     }
 
     SettingsSubScreen(title = "Server ring-hub", onBack = onBack) {
@@ -138,6 +170,11 @@ fun RingHubSettingsScreen(onBack: () -> Unit) {
                         },
                     ) { Text("Sincronizza ora") }
                 }
+                OutlinedButton(
+                    enabled = prefs.enabled && urlProblem == null,
+                    onClick = { if (save()) confirmResend = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Reinvia tutti i dati") }
                 testMessage?.let {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                 }
