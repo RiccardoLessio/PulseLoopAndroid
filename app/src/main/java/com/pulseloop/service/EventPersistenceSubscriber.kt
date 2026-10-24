@@ -6,6 +6,7 @@ import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.data.dao.MeasurementDeletionDao
 import com.pulseloop.data.entity.*
 import com.pulseloop.health.HealthConnectExportWorker
+import com.pulseloop.remote.RingHubSyncWorker
 import com.pulseloop.settings.QuietHoursPrefs
 import com.pulseloop.ring.*
 import kotlinx.coroutines.*
@@ -409,6 +410,8 @@ class EventPersistenceSubscriber(
                     // moment new measurements can have landed. Debounced 15 s + REPLACE in the
                     // worker, so this is cheap to fire on every done.
                     HealthConnectExportWorker.enqueue(context)
+                    // ring-hub push: same moment, same debounce; a no-op while disabled.
+                    RingHubSyncWorker.enqueue(context)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}

@@ -32,6 +32,10 @@ class SleepRecordDeletionTest {
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
+
+        override suspend fun deletedAfter(deletedAt: Long, id: String, limit: Int): List<MeasurementDeletionEntity> =
+            rows.values.filter { it.deletedAt > deletedAt || (it.deletedAt == deletedAt && it.measurementId > id) }
+                .sortedWith(compareBy({ it.deletedAt }, { it.measurementId })).take(limit)
     }
 
     // The scenario from the issue: a record opened 23:08 that is really sofa time, tombstoned by

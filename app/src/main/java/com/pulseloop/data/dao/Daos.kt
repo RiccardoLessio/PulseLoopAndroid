@@ -37,6 +37,10 @@ interface DeviceDao {
     /** Targeted removal (e.g. the demo device) without touching a paired ring's row. */
     @Query("DELETE FROM devices WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    // ring-hub delta sync: the paired ring rows changed after the watermark (the demo row never leaves).
+    @Query("SELECT * FROM devices WHERE id != 'demo-device' AND updatedAt > :watermark ORDER BY updatedAt ASC")
+    suspend fun realUpdatedSince(watermark: Long): List<DeviceEntity>
 }
 
 @Dao
@@ -139,6 +143,14 @@ interface MeasurementDao {
      */
     @Query("SELECT * FROM measurements WHERE kindRaw = :kind AND timestamp BETWEEN :start AND :end AND sourceRaw NOT IN ('demo','mock') ORDER BY timestamp ASC")
     suspend fun rangeReal(kind: String, start: Long, end: Long): List<MeasurementEntity>
+
+    // ring-hub delta sync: keyset page after (watermark, key), demo/mock excluded.
+    @Query(
+        "SELECT * FROM measurements WHERE sourceRaw NOT IN ('demo','mock') " +
+            "AND (createdAt > :createdAt OR (createdAt = :createdAt AND id > :id)) " +
+            "ORDER BY createdAt ASC, id ASC LIMIT :limit",
+    )
+    suspend fun realCreatedAfter(createdAt: Long, id: String, limit: Int): List<MeasurementEntity>
 }
 
 @Dao
@@ -190,6 +202,14 @@ interface ActivityDailyDao {
             "AND source NOT IN ('demo','mock') ORDER BY updatedAt ASC, date ASC",
     )
     suspend fun updatedSince(watermark: Long): List<ActivityDailyEntity>
+
+    // ring-hub delta sync: keyset page after (watermark, key), demo/mock excluded.
+    @Query(
+        "SELECT * FROM activity_daily WHERE source NOT IN ('demo','mock') " +
+            "AND (updatedAt > :updatedAt OR (updatedAt = :updatedAt AND id > :id)) " +
+            "ORDER BY updatedAt ASC, id ASC LIMIT :limit",
+    )
+    suspend fun realUpdatedAfter(updatedAt: Long, id: String, limit: Int): List<ActivityDailyEntity>
 }
 
 @Dao
@@ -208,6 +228,14 @@ interface ActivityBucketDao {
     @Query("DELETE FROM activity_buckets WHERE startEpoch = :startEpoch")
     suspend fun deleteByStart(startEpoch: Long)
 
+    // ring-hub delta sync: keyset page after (watermark, key), demo/mock excluded.
+    @Query(
+        "SELECT * FROM activity_buckets WHERE source NOT IN ('demo','mock') " +
+            "AND (updatedAt > :updatedAt OR (updatedAt = :updatedAt AND startEpoch > :startEpoch)) " +
+            "ORDER BY updatedAt ASC, startEpoch ASC LIMIT :limit",
+    )
+    suspend fun updatedAfter(updatedAt: Long, startEpoch: Long, limit: Int): List<ActivityBucketEntity>
+
     @Query("DELETE FROM activity_buckets")
     suspend fun clear()
 }
@@ -219,6 +247,13 @@ interface BatterySampleDao {
 
     @Insert
     suspend fun insert(sample: BatterySampleEntity)
+
+    // ring-hub delta sync: keyset page after (watermark, key).
+    @Query(
+        "SELECT * FROM battery_samples WHERE (createdAt > :createdAt OR (createdAt = :createdAt AND id > :id)) " +
+            "ORDER BY createdAt ASC, id ASC LIMIT :limit",
+    )
+    suspend fun createdAfter(createdAt: Long, id: String, limit: Int): List<BatterySampleEntity>
 }
 
 @Dao
@@ -374,6 +409,14 @@ interface SleepSessionDao {
     // Phase 2 ordered by date and could strand a night below an advanced watermark.)
     @Query("SELECT * FROM sleep_sessions WHERE updatedAt > :watermark AND sourceRaw NOT IN ('demo','mock') ORDER BY updatedAt ASC, date ASC, startAt ASC")
     suspend fun updatedSince(watermark: Long): List<SleepSessionEntity>
+
+    // ring-hub delta sync: keyset page after (watermark, key), demo/mock excluded.
+    @Query(
+        "SELECT * FROM sleep_sessions WHERE sourceRaw NOT IN ('demo','mock') " +
+            "AND (updatedAt > :updatedAt OR (updatedAt = :updatedAt AND id > :id)) " +
+            "ORDER BY updatedAt ASC, id ASC LIMIT :limit",
+    )
+    suspend fun realUpdatedAfter(updatedAt: Long, id: String, limit: Int): List<SleepSessionEntity>
 
     /** Earliest tracked day key (local midnight millis) — bounds how far Day navigation can page back. */
     @Query("SELECT MIN(date) FROM sleep_sessions WHERE totalMinutes > 0")
@@ -722,6 +765,13 @@ interface MeasurementDeletionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(rows: List<MeasurementDeletionEntity>)
+
+    // ring-hub delta sync: keyset page after (watermark, key).
+    @Query(
+        "SELECT * FROM measurement_deletions WHERE (deletedAt > :deletedAt OR (deletedAt = :deletedAt AND measurementId > :id)) " +
+            "ORDER BY deletedAt ASC, measurementId ASC LIMIT :limit",
+    )
+    suspend fun deletedAfter(deletedAt: Long, id: String, limit: Int): List<MeasurementDeletionEntity>
 
     /**
      * Is the ring's own copy of a deleted spot reading due back? A `spot` row's id is a fresh UUID,

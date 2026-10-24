@@ -19,6 +19,10 @@
   host to a public http:// one would resend the coach's health-context POST body in the clear.
   The local provider therefore sends with redirects disabled (ResponsesHttp.clientFor,
   followRedirects = false) — that is the other half of this restriction, not an optimisation.
+
+  The ring-hub sync (remote/RingHubClient) relies on the same two halves: RingHubClient.validate
+  accepts http:// only for LocalEndpoint.isPrivateHost hosts (LAN, Tailscale 100.64.0.0/10,
+  *.ts.net, a bare MagicDNS name), and its OkHttp client follows no redirects.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">

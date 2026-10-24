@@ -37,6 +37,10 @@ class MeasurementDeletionTest {
         override suspend fun insertAll(rows: List<MeasurementDeletionEntity>) {
             rows.forEach { this.rows[it.measurementId] = it }
         }
+
+        override suspend fun deletedAfter(deletedAt: Long, id: String, limit: Int): List<MeasurementDeletionEntity> =
+            rows.values.filter { it.deletedAt > deletedAt || (it.deletedAt == deletedAt && it.measurementId > id) }
+                .sortedWith(compareBy({ it.deletedAt }, { it.measurementId })).take(limit)
     }
 
     private fun measurement(id: String, kind: MeasurementKind, timestamp: Long, source: String) =
