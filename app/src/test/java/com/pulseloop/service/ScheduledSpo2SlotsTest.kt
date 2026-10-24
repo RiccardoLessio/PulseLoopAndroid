@@ -133,4 +133,14 @@ class ScheduledSpo2SlotsTest {
         assertTrue(ScheduledSpo2Slots.isClear(at(10, 30), 120))
         assertTrue(ScheduledSpo2Slots.isClear(at(11, 30), 120))
     }
+
+    @Test
+    fun `two hour ring grid with three hour app interval lands at half past and stays clear`() {
+        assertEquals(at(12, 30), ScheduledSpo2Slots.nextSlot(at(10, 5), 180, 120))
+        var t = at(0, 0)
+        repeat(40) {
+            t = ScheduledSpo2Slots.nextSlot(t, 180, 120)
+            assertTrue("180m app slot $t on 120m ring grid", ScheduledSpo2Slots.isClear(t, 120))
+        }
+    }
 }

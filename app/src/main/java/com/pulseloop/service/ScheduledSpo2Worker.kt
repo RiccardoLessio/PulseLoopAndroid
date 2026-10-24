@@ -88,6 +88,21 @@ class ScheduledSpo2Worker(
          * Even if the user turns off the ring's SpO₂ toggle, the ring still measures on the HR
          * interval. Supports HR intervals up to 120 min (issue #103).
          */
+        internal fun computeRingIntervalMinutes(
+            isYcbt: Boolean,
+            hrIntervalMinutes: Int,
+            spo2IntervalMinutes: Int,
+            spo2Enabled: Boolean,
+        ): Int? {
+            val minutes = if (isYcbt) {
+                hrIntervalMinutes.takeIf { it > 0 } ?: 60
+            } else {
+                if (!spo2Enabled) return null
+                spo2IntervalMinutes.takeIf { it > 0 } ?: hrIntervalMinutes
+            }
+            return minutes.coerceIn(5, 120)
+        }
+
         private suspend fun intervalMinutes(db: PulseLoopDatabase): Int? {
             val settings = loadPersistedMeasurementSettings(db) ?: return null
             val device = db.deviceDao().currentReal()
@@ -95,13 +110,12 @@ class ScheduledSpo2Worker(
                 com.pulseloop.ring.RingDeviceType.YCBT,
                 com.pulseloop.ring.RingDeviceType.COLMI_SMART_HEALTH,
             )
-            val minutes = if (isYcbt) {
-                settings.hrIntervalMinutes.takeIf { it > 0 } ?: 60
-            } else {
-                if (!settings.spo2Enabled) return null
-                settings.spo2IntervalMinutes.takeIf { it > 0 } ?: settings.hrIntervalMinutes
-            }
-            return minutes.coerceIn(5, 120)
+            return computeRingIntervalMinutes(
+                isYcbt = isYcbt,
+                hrIntervalMinutes = settings.hrIntervalMinutes,
+                spo2IntervalMinutes = settings.spo2IntervalMinutes,
+                spo2Enabled = settings.spo2Enabled,
+            )
         }
     }
 

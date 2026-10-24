@@ -44,6 +44,16 @@ import java.time.ZoneId
  */
 class VitalsExporter(private val db: PulseLoopDatabase) {
 
+    companion object {
+        /** Issue #103: only export genuine spot/measured SpO2; exclude hourly estimates derived from HR. */
+        fun shouldExportSpo2(value: Double, timestamp: Long, estimatedTimestamps: Set<Long>): Boolean =
+            HealthConnectTypeMappings.isPlausibleSpO2(value) && timestamp !in estimatedTimestamps
+
+        /** Issue #103: do not export respiratory rate for rings that derive it from heart rate. */
+        fun shouldExportRespRate(value: Double, isYcbt: Boolean): Boolean =
+            !isYcbt && HealthConnectTypeMappings.isPlausibleRespRate(value)
+    }
+
     /**
      * kindKey (the id token, e.g. "hr") -> the `measurements.kindRaw` column value to query.
      * Every write path persists kindRaw = MeasurementKind.<X>.name (EventPersistenceSubscriber,
@@ -244,7 +254,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
             val instant = Instant.ofEpochMilli(row.timestamp)
             val offset = HealthConnectTypeMappings.zoneOffsetAt(instant, zone)
             val record: Record? = when (kindKey) {
-                "spo2" -> if (HealthConnectTypeMappings.isPlausibleSpO2(row.value) && row.timestamp !in estimatedSpo2) {
+                "spo2" -> if (shouldExportSpo2(row.value, row.timestamp, estimatedSpo2)) {
                     OxygenSaturationRecord(instant, offset, Percentage(row.value), metadata(row, "spo2", device))
                 } else null
                 "hrv" -> if (HealthConnectTypeMappings.isPlausibleHrvRmssd(row.value)) {
@@ -267,7 +277,7 @@ class VitalsExporter(private val db: PulseLoopDatabase) {
                         metadata = metadata(row, "glucose", device),
                     )
                 } else null
-                "resp_rate" -> if (!isYcbt && HealthConnectTypeMappings.isPlausibleRespRate(row.value)) {
+                "resp_rate" -> if (shouldExportRespRate(row.value, isYcbt)) {
                     RespiratoryRateRecord(
                         time = instant,
                         zoneOffset = offset,

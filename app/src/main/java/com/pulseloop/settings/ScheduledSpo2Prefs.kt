@@ -16,9 +16,9 @@ import com.pulseloop.ring.WearableCapability
  * Off by default: each run holds the connection and the optical sensor for about a minute.
  * In SharedPreferences rather than `device_measurement_configs` to stay clear of a schema bump.
  */
-class ScheduledSpo2Prefs(context: Context) {
+class ScheduledSpo2Prefs internal constructor(private val prefs: android.content.SharedPreferences) {
 
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    constructor(context: Context) : this(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
 
     var enabled: Boolean
         get() = prefs.getBoolean(KEY_ENABLED, false)
