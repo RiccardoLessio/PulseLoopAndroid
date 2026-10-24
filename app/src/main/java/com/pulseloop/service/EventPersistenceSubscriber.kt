@@ -53,13 +53,17 @@ class EventPersistenceSubscriber(
     private var lastBatteryLogAt: Long? = null
     private val batteryMinIntervalMs = 30 * 60_000L
 
+    @Synchronized
     fun start() {
         if (job != null) return
-        job = scope.launch {
+        // UNDISPATCHED: the collector subscribes to the (replay = 0) bus before start() returns,
+        // so a hand-off from BackgroundPersistence leaves no gap in which events are dropped.
+        job = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             PulseEventBus.events.collect { event -> persist(event) }
         }
     }
 
+    @Synchronized
     fun stop() { job?.cancel(); job = null }
 
     private suspend fun persist(event: PulseEvent) {

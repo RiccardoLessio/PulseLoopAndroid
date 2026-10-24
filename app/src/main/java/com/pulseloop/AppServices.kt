@@ -69,8 +69,8 @@ class AppServices private constructor(context: Context) {
     private val coreStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
-        // The full service set now exists: it owns persistence from here on.
-        com.pulseloop.service.BackgroundPersistence.stop()
+        // The full service set now exists: it owns persistence from here on, starting now.
+        com.pulseloop.service.BackgroundPersistence.handOffTo(persistence)
     }
 
     /**
