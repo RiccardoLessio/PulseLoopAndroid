@@ -34,8 +34,11 @@ import java.util.concurrent.TimeUnit
 
 @Serializable
 data class DiarySettings(
-    /** Evening reminder on by default; one switch turns it off. */
-    val enabled: Boolean = true,
+    /**
+     * Evening reminder: opt-in (ROADMAP), so off on a first install and after the upgrade that
+     * introduces it. A stored choice is kept: the settings are only written by [DiaryPrefs.update].
+     */
+    val enabled: Boolean = false,
     val eveningMinute: Int = 21 * 60 + 30,
     /** Null = never chosen: auto-open when the full-screen-intent permission allows it. */
     val modeCode: String? = null,

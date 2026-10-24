@@ -288,6 +288,11 @@ private fun ZoneEditor(initial: ZoneEntity, onDismiss: () -> Unit, onSave: (Zone
                     }
                 }
                 ZoneMap(zone) { lat, lon -> zone = zone.copy(latitude = lat, longitude = lon) }
+                Text(
+                    "Le tessere della mappa arrivano dai server di OpenStreetMap, che vedono quale zona stai guardando.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text("Tocca la mappa o trascina il segnaposto. Raggio: ${zone.radiusMeters.roundToInt()} m", style = MaterialTheme.typography.bodySmall)
                 Slider(value = zone.radiusMeters.toFloat(), onValueChange = { zone = zone.copy(radiusMeters = (it / 10f).roundToInt() * 10.0) }, valueRange = 50f..1000f)
                 OutlinedButton(enabled = !locating, onClick = { useCurrentLocation() }) { Text(if (locating) "Cerco la posizione…" else "Usa posizione attuale") }
