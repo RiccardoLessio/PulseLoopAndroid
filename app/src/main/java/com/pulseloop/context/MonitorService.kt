@@ -71,6 +71,11 @@ class MonitorService : Service() {
             private set
 
         @Volatile private var instance: MonitorService? = null
+
+        private val LOCATION_TYPE =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
+        private val LINK_TYPE =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
         private val bgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         fun needsLink(context: Context): Boolean {
@@ -126,43 +131,29 @@ class MonitorService : Service() {
         createChannel(this)
     }
 
+    /** The foreground types this instance currently holds; null while not in the foreground. */
+    private var heldTypes: Int? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val link = needsLink(this)
-        val location = needsLocation(this) && locationAllowedNow(this)
+        // A background refresh can't newly acquire the location type (while-in-use rule), but a
+        // service that already holds it keeps it: dropping it here would stop tracking until the
+        // app next comes to the foreground.
+        val holdsLocation = heldTypes?.let { it and LOCATION_TYPE != 0 } == true
+        val location = needsLocation(this) && (locationAllowedNow(this) || holdsLocation)
         if (!link && !location) {
-            // The need went away between refresh() and here. A startForegroundService() must still
-            // be answered with startForeground() before stopping, or Android kills the app.
-            runCatching {
-                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
-                ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(link = false, location = false), type)
-            }
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            // The need went away between refresh() and here.
+            stopAnswered()
             return START_NOT_STICKY
         }
-        var types = 0
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (location) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            if (link) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val types = enterForeground(link, location)
+        if (types == null) {
+            val app = applicationContext
+            if (link) bgScope.launch { AdaptiveController.interrupt(app, "fgs_denied") }
+            stopAnswered()
+            return START_NOT_STICKY
         }
-        var trackLocation = location
-        try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(link, location), types)
-        } catch (e: Exception) {
-            Log.w(TAG, "startForeground refused (types $types)", e)
-            // Location is the type Android refuses from the background; keep the ring link alone.
-            val linkOnly = link && location && runCatching {
-                val t = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0
-                ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(link = true, location = false), t)
-            }.isSuccess
-            if (!linkOnly) {
-                val app = applicationContext
-                if (link) bgScope.launch { AdaptiveController.interrupt(app, "fgs_denied") }
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            trackLocation = false
-        }
+        val trackLocation = location && (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || types and LOCATION_TYPE != 0)
         if (trackLocation) {
             ioScope.launch {
                 val activity = PulseLoopDatabase.getInstance(this@MonitorService).activityTransitionDao().latestEnter()?.activityType
@@ -173,6 +164,60 @@ class MonitorService : Service() {
         }
         if (link && session?.isActive != true) session = ioScope.launch { runSession() }
         return START_STICKY
+    }
+
+    /**
+     * Goes foreground with the types [link]/[location] need, falling back to the ring link alone
+     * (location is the type Android refuses from the background). Returns the types obtained, or
+     * null when no wanted type was allowed — the caller then stops via [stopAnswered].
+     */
+    private fun enterForeground(link: Boolean, location: Boolean): Int? {
+        var types = 0
+        if (location) types = types or LOCATION_TYPE
+        if (link) types = types or LINK_TYPE
+        // Already foreground with exactly these types: nothing to change, and no risky re-check
+        // (Android clears a repeated startForegroundService()'s obligation for a service that is
+        // already in the foreground).
+        if (heldTypes == types && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return types
+        if (tryStartForeground(types, link, location)) return types
+        if (link && location && tryStartForeground(LINK_TYPE, link = true, location = false)) return LINK_TYPE
+        return null
+    }
+
+    private fun tryStartForeground(types: Int, link: Boolean, location: Boolean): Boolean = try {
+        val t = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) types else 0
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(link, location), t)
+        heldTypes = types
+        true
+    } catch (e: Exception) {
+        // SecurityException / ForegroundServiceTypeException (API 34+: missing type permission,
+        // location while-in-use not granted from the background).
+        Log.w(TAG, "startForeground refused (types $types)", e)
+        false
+    }
+
+    /**
+     * Stops the service, answering a pending startForegroundService() first: Android kills the app
+     * ("did not then call startForeground") when a service started that way stops without it.
+     * Already in the foreground, the contract is met. Otherwise the call uses a type that needs no
+     * runtime permission: shortService on API 34+ (where a typeless call is refused), none below.
+     */
+    private fun stopAnswered() {
+        if (heldTypes == null) {
+            try {
+                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SHORT_SERVICE
+                } else {
+                    0
+                }
+                ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(link = false, location = false), type)
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground for stop refused", e)
+            }
+        }
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        heldTypes = null
+        stopSelf()
     }
 
     override fun onDestroy() {

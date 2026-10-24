@@ -141,7 +141,7 @@
         <!-- v0.2: adaptive monitoring + automatic location ("Monitoraggio attivo"). -->
         <service
             android:name=".context.MonitorService"
-            android:foregroundServiceType="connectedDevice|location"
+            android:foregroundServiceType="connectedDevice|location|shortService"
             android:exported="false" />
 
         <receiver android:name=".context.ActivityTransitionReceiver" android:exported="false" />
