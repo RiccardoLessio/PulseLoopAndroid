@@ -1,6 +1,13 @@
 package com.pulseloop.remote
 
 import com.pulseloop.data.entity.ActivityBucketEntity
+import com.pulseloop.data.entity.ActivityLabelEntity
+import com.pulseloop.data.entity.ActivityTransitionEntity
+import com.pulseloop.data.entity.AdaptiveTransitionEntity
+import com.pulseloop.data.entity.DiaryEntryEntity
+import com.pulseloop.data.entity.LocationPointEntity
+import com.pulseloop.data.entity.PhoneUsageHourlyEntity
+import com.pulseloop.data.entity.ZoneEntity
 import com.pulseloop.data.entity.ActivityDailyEntity
 import com.pulseloop.data.entity.BatterySampleEntity
 import com.pulseloop.data.entity.DeviceEntity
@@ -22,6 +29,14 @@ enum class RingHubStream(val wireName: String) {
     ACTIVITY_BUCKETS("activityBuckets"),
     BATTERY_SAMPLES("batterySamples"),
     SLEEP_SESSIONS("sleepSessions"),
+    // v0.2
+    ADAPTIVE_TRANSITIONS("adaptiveTransitions"),
+    ACTIVITY_LABELS("activityLabels"),
+    DIARY_ENTRIES("diaryEntries"),
+    PHONE_USAGE_HOURLY("phoneUsageHourly"),
+    LOCATION_POINTS("locationPoints"),
+    ACTIVITY_TRANSITIONS("activityTransitions"),
+    ZONES("zones"),
 }
 
 /** Per-stream "everything up to here has landed" marks, in epoch ms. */
@@ -47,6 +62,14 @@ interface RingHubSource {
     suspend fun batterySamplesAfter(ts: Long, key: String, limit: Int): List<BatterySampleEntity>
     suspend fun sleepSessionsAfter(ts: Long, key: String, limit: Int): List<SleepSessionEntity>
     suspend fun stageBlocksFor(sessionIds: List<String>): List<SleepStageBlockEntity>
+    // v0.2: append-style rows on createdAt, rows edited in place on updatedAt.
+    suspend fun adaptiveTransitionsAfter(ts: Long, key: String, limit: Int): List<AdaptiveTransitionEntity>
+    suspend fun activityLabelsAfter(ts: Long, key: String, limit: Int): List<ActivityLabelEntity>
+    suspend fun diaryEntriesAfter(ts: Long, key: String, limit: Int): List<DiaryEntryEntity>
+    suspend fun phoneUsageAfter(ts: Long, key: String, limit: Int): List<PhoneUsageHourlyEntity>
+    suspend fun locationPointsAfter(ts: Long, key: String, limit: Int): List<LocationPointEntity>
+    suspend fun activityTransitionsAfter(ts: Long, key: String, limit: Int): List<ActivityTransitionEntity>
+    suspend fun zonesAfter(ts: Long, key: String, limit: Int): List<ZoneEntity>
 }
 
 /** What one pass sent, per stream (rows) and in total (requests). */
@@ -112,6 +135,29 @@ class RingHubSync(
             batch().copy(batterySamples = it.map { row -> row.toDto() })
         }
         pumpSleep()
+        pump(RingHubStream.ADAPTIVE_TRANSITIONS, source::adaptiveTransitionsAfter, { it.createdAt }, { it.id }) {
+            batch().copy(adaptiveTransitions = it.map { row -> row.toDto() })
+        }
+        pump(RingHubStream.ACTIVITY_LABELS, source::activityLabelsAfter, { it.updatedAt }, { it.id }) {
+            batch().copy(activityLabels = it.map { row -> row.toDto() })
+        }
+        pump(RingHubStream.DIARY_ENTRIES, source::diaryEntriesAfter, { it.updatedAt }, { it.id }) {
+            batch().copy(diaryEntries = it.map { row -> row.toDto() })
+        }
+        pump(RingHubStream.PHONE_USAGE_HOURLY, source::phoneUsageAfter, { it.updatedAt }, { it.id }) {
+            batch().copy(phoneUsageHourly = it.map { row -> row.toDto() })
+        }
+        pump(RingHubStream.ACTIVITY_TRANSITIONS, source::activityTransitionsAfter, { it.createdAt }, { it.id }) {
+            batch().copy(activityTransitions = it.map { row -> row.toDto() })
+        }
+        // Zones before location points: the server rebuilds its places when zones arrive, so the
+        // points that follow are assigned to the right zone straight away.
+        pump(RingHubStream.ZONES, source::zonesAfter, { it.updatedAt }, { it.id }) {
+            batch().copy(zones = it.map { row -> row.toDto() })
+        }
+        pump(RingHubStream.LOCATION_POINTS, source::locationPointsAfter, { it.createdAt }, { it.id }) {
+            batch().copy(locationPoints = it.map { row -> row.toDto() })
+        }
         return RingHubPassResult(sent.toMap(), requests)
     }
 

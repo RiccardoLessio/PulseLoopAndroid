@@ -77,6 +77,16 @@ class RingSyncWorker(
         val device = db.deviceDao().currentReal()
         if (device == null) return Result.success()
 
+        // The adaptive monitor holds the app's own link while it samples; a second client would
+        // fight it for GATT ownership. Its samples feed the evaluation directly.
+        if (com.pulseloop.context.MonitorService.holdsRingLink) return Result.success()
+
+        // A cold background process (the app was swiped away or killed — routine on MagicOS) has
+        // no UI composition, so nothing would persist what this pass receives. Keep a subscriber
+        // on the bus: the app's own when it exists, else a process-level one.
+        (com.pulseloop.AppServices.existing()?.persistence
+            ?: BackgroundPersistence.get(applicationContext)).start()
+
         val bleClient = RingBLEClient(applicationContext, transientOwner = true)
 
         // Load the persisted measurement config + profile up front so the connect
@@ -86,6 +96,7 @@ class RingSyncWorker(
         val measurementSettings = loadPersistedMeasurementSettings(db)
         val profileValues = loadPersistedUserProfile(db, keyStore)
 
+        var synced = false
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
                 // Connect to last-known ring
@@ -126,6 +137,7 @@ class RingSyncWorker(
                 // worker via the SyncProgress("done") event, so both sync owners cover it.
                 HealthConnectExportWorker.enqueue(applicationContext)
                 RingHubSyncWorker.enqueue(applicationContext)
+                synced = true
 
                 Result.success()
             }
@@ -142,6 +154,9 @@ class RingSyncWorker(
                     PulseEvent.DeviceStateChanged(RingConnectionState.DISCONNECTED, null)
                 )
             }
+            // Adaptive sampling: this pass is the periodic check (see AdaptiveController). Only
+            // after this worker's own client let go of GATT, so a monitor episode can connect.
+            if (synced) com.pulseloop.adaptive.AdaptiveController.onSyncCompleted(applicationContext)
         }
     }
 

@@ -54,6 +54,9 @@ class MainActivity : ComponentActivity() {
 
         CoachNotifications.createChannel(this)
         com.pulseloop.notifications.BatteryNotifications.createChannel(this)
+        com.pulseloop.labels.LabelPrompter.createChannel(this)
+        com.pulseloop.diary.DiaryReminders.createChannel(this)
+        com.pulseloop.ui.DeepLinks.handle(intent)
         requestAllPermissions()
 
         setContent {
@@ -81,6 +84,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        com.pulseloop.ui.DeepLinks.handle(intent)
         handleStravaRedirect(intent)
     }
 

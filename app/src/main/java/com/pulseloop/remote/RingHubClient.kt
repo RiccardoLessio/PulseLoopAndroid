@@ -3,6 +3,7 @@ package com.pulseloop.remote
 import com.pulseloop.coach.local.LocalEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -39,6 +40,17 @@ class RingHubClient(
 
     suspend fun syncState(): RingHubServerState =
         ringHubJson.decodeFromString(RingHubServerState.serializer(), execute(get("/api/v1/sync/state", auth = true)))
+
+    /** Every zone on the server, deleted ones included (zones promoted in the dashboard come back this way). */
+    suspend fun zones(): List<ZoneDTO> =
+        ringHubJson.decodeFromString(ListSerializer(ZoneDTO.serializer()), execute(get("/api/v1/zones", auth = true)))
+
+    /** The places ring-hub detected automatically, most visited first. */
+    suspend fun places(): List<com.pulseloop.context.AutoPlace> =
+        ringHubJson.decodeFromString(
+            ListSerializer(com.pulseloop.context.AutoPlace.serializer()),
+            execute(get("/api/v1/places", auth = true)),
+        )
 
     suspend fun postBatch(batch: RingHubBatch): RingHubIngestResult {
         val body = ringHubJson.encodeToString(RingHubBatch.serializer(), batch)

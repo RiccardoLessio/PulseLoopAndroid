@@ -567,14 +567,14 @@ class RingSyncCoordinator(
      * on the clock. These are what the separate controls call. Refused while another leg holds the
      * sensor, because the ring serves one at a time.
      */
-    suspend fun measureHeartRateOnly(): Int? {
+    suspend fun measureHeartRateOnly(sourceRaw: String? = null): Int? {
         if (spotMeasureInProgress) return null
         if (!canMeasureHeartRate) return null
         // A refusal clears the leg's state instead of just returning. The states persist as
         // DONE/FAILED after a run, so leaving one behind had the caller report the *previous*
         // run's verdict as this one's — [measureSpot] refuses the same way when disconnected.
         if (!isConnected) { hrState = MeasureState.IDLE; return null }
-        return measureHR()
+        return measureHR(sourceRaw)
     }
 
     suspend fun measureSpO2Only(): Int? {
@@ -610,11 +610,11 @@ class RingSyncCoordinator(
      * a user after one vital is not held for the others). Refused while another leg holds the
      * sensor, and refused for a vital this ring doesn't offer.
      */
-    suspend fun measureVitalOnly(vital: SpotVital): Double? {
+    suspend fun measureVitalOnly(vital: SpotVital, sourceRaw: String? = null): Double? {
         if (spotMeasureInProgress) return null
         if (vital !in measurableSpotVitals) return null
         if (!isConnected) { setVitalState(vital, MeasureState.IDLE); return null }
-        return measureVital(vital)
+        return measureVital(vital, sourceRaw)
     }
 
     /** True for a family that measures HRV/stress/temperature by streaming ([RingSyncEngine.streamsSpotVitals]). */
@@ -656,7 +656,8 @@ class RingSyncCoordinator(
             return total
         }
 
-    suspend fun measureHR(): Int? {
+    /** [sourceRaw] tags the stored reading (adaptive sampling: `adaptive_spot`); null keeps the default. */
+    suspend fun measureHR(sourceRaw: String? = null): Int? {
         if (hrState == MeasureState.MEASURING) return null
         // Clear last run's verdict before any path that can return without reaching MEASURING (the
         // workout refusal below), so the caller never reads an old DONE/FAILED as this run's.
@@ -752,7 +753,7 @@ class RingSyncCoordinator(
                 PulseEventBus.publishBlocking(
                     PulseEvent.HeartRateSample(
                         bpm = settled, timestamp = java.time.Instant.now(),
-                        spot = true, ringWillLogIt = completedByRing,
+                        spot = true, ringWillLogIt = completedByRing, sourceRaw = sourceRaw,
                     )
                 )
             }
@@ -877,7 +878,7 @@ class RingSyncCoordinator(
      * [PulseEvent.SpotVitalSample]); the one settled reading is published once at the end, so this
      * leg needs no live-sample gate.
      */
-    private suspend fun measureVital(vital: SpotVital): Double? {
+    private suspend fun measureVital(vital: SpotVital, sourceRaw: String? = null): Double? {
         if (vitalState(vital) == MeasureState.MEASURING) return null
         setVitalState(vital, MeasureState.IDLE)   // see measureHR: no stale verdict on a refusal
         if (!isConnected) { setVitalState(vital, MeasureState.FAILED); measureDisconnected = true; return null }
@@ -913,8 +914,8 @@ class RingSyncCoordinator(
                 val now = java.time.Instant.now()
                 PulseEventBus.publishBlocking(
                     when (vital) {
-                        SpotVital.HRV -> PulseEvent.HrvSample(kotlin.math.round(settled).toInt(), now)
-                        SpotVital.STRESS -> PulseEvent.StressSample(kotlin.math.round(settled).toInt(), now)
+                        SpotVital.HRV -> PulseEvent.HrvSample(kotlin.math.round(settled).toInt(), now, sourceRaw = sourceRaw)
+                        SpotVital.STRESS -> PulseEvent.StressSample(kotlin.math.round(settled).toInt(), now, sourceRaw = sourceRaw)
                         SpotVital.TEMPERATURE -> PulseEvent.TemperatureSample(settled, now)
                     }
                 )

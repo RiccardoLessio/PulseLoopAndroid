@@ -43,8 +43,16 @@ import com.pulseloop.data.entity.*
         MealEntryEntity::class,
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
+        // v0.2 context (v30)
+        AdaptiveTransitionEntity::class,
+        ActivityLabelEntity::class,
+        DiaryEntryEntity::class,
+        PhoneUsageHourlyEntity::class,
+        LocationPointEntity::class,
+        ActivityTransitionEntity::class,
+        ZoneEntity::class,
     ],
-    version = 29,
+    version = 30,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -77,6 +85,15 @@ abstract class PulseLoopDatabase : RoomDatabase() {
     // iOS #96: Nutrition
     abstract fun mealEntryDao(): MealEntryDao
     abstract fun foodProductDao(): FoodProductDao
+    // v0.2 context
+    abstract fun adaptiveTransitionDao(): AdaptiveTransitionDao
+    abstract fun activityLabelDao(): ActivityLabelDao
+    abstract fun diaryEntryDao(): DiaryEntryDao
+    abstract fun phoneUsageHourlyDao(): PhoneUsageHourlyDao
+    abstract fun locationPointDao(): LocationPointDao
+    abstract fun activityTransitionDao(): ActivityTransitionDao
+    abstract fun zoneDao(): ZoneDao
+    abstract fun adaptiveReadDao(): AdaptiveReadDao
 
     /**
      * Empty every table, atomically. Goes through Room's [withTransaction] rather than a raw
@@ -89,7 +106,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
      * uses this list during a restore.
      */
     suspend fun nukeAllTables() = withTransaction {
-        for (table in ALL_TABLES) {
+        for (table in ALL_TABLES + CONTEXT_TABLES) {
             openHelper.writableDatabase.execSQL("DELETE FROM $table")
         }
     }
@@ -113,6 +130,49 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             "wearable_logs", "coach_notification_records",
             "meal_entries", "food_products", "measurement_deletions",
         )
+
+        /**
+         * The v0.2 context tables. Not in [ALL_TABLES] on purpose: the archive restore wipes
+         * ALL_TABLES and the archive does not carry these, so a restore would silently lose the
+         * diary and labels. "Delete all data" ([nukeAllTables]) still clears them.
+         */
+        val CONTEXT_TABLES = listOf(
+            "adaptive_transitions", "activity_labels", "diary_entries", "phone_usage_hourly",
+            "location_points", "activity_transitions", "zones",
+        )
+
+        /**
+         * v29 → v30: the v0.2 context tables. Only CREATE statements — nothing existing is
+         * touched, so the upgrade is non-destructive. Each string is byte-identical to Room's own
+         * `createAllTables` SQL (MigrationSchemaTest compares them against the generated code).
+         */
+        internal val MIGRATION_29_30_SQL = listOf(
+            "CREATE TABLE IF NOT EXISTS `adaptive_transitions` (`id` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `fromState` TEXT NOT NULL, `toState` TEXT NOT NULL, `reason` TEXT NOT NULL, `episodeId` TEXT, `valuesJson` TEXT, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_adaptive_transitions_timestamp` ON `adaptive_transitions` (`timestamp`)",
+            "CREATE INDEX IF NOT EXISTS `index_adaptive_transitions_createdAt` ON `adaptive_transitions` (`createdAt`)",
+            "CREATE TABLE IF NOT EXISTS `activity_labels` (`id` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `category` TEXT NOT NULL, `text` TEXT, `suggested` TEXT, `source` TEXT NOT NULL, `episodeId` TEXT, `transitionId` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `deletedAt` INTEGER, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_activity_labels_timestamp` ON `activity_labels` (`timestamp`)",
+            "CREATE INDEX IF NOT EXISTS `index_activity_labels_updatedAt` ON `activity_labels` (`updatedAt`)",
+            "CREATE TABLE IF NOT EXISTS `diary_entries` (`id` TEXT NOT NULL, `date` TEXT NOT NULL, `caffeine` INTEGER, `lateCaffeine` INTEGER, `caffeineLastTime` TEXT, `alcohol` INTEGER, `alcoholUnits` REAL, `alcoholLastTime` TEXT, `lateMeal` INTEGER, `lateMealTime` TEXT, `sport` INTEGER, `sportStart` TEXT, `sportDurationMin` INTEGER, `sportIntensity` INTEGER, `screensInBed` INTEGER, `mood` INTEGER, `perceivedStress` INTEGER, `illness` INTEGER, `notes` TEXT, `morningMood` INTEGER, `morningFeeling` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_diary_entries_date` ON `diary_entries` (`date`)",
+            "CREATE INDEX IF NOT EXISTS `index_diary_entries_updatedAt` ON `diary_entries` (`updatedAt`)",
+            "CREATE TABLE IF NOT EXISTS `phone_usage_hourly` (`id` TEXT NOT NULL, `hourStart` INTEGER NOT NULL, `screenOnMinutes` REAL NOT NULL, `unlocks` INTEGER NOT NULL, `lastScreenOffAt` INTEGER, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_phone_usage_hourly_updatedAt` ON `phone_usage_hourly` (`updatedAt`)",
+            "CREATE TABLE IF NOT EXISTS `location_points` (`id` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `latitude` REAL NOT NULL, `longitude` REAL NOT NULL, `accuracy` REAL, `speed` REAL, `provider` TEXT, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_location_points_timestamp` ON `location_points` (`timestamp`)",
+            "CREATE INDEX IF NOT EXISTS `index_location_points_createdAt` ON `location_points` (`createdAt`)",
+            "CREATE TABLE IF NOT EXISTS `activity_transitions` (`id` TEXT NOT NULL, `timestamp` INTEGER NOT NULL, `activityType` TEXT NOT NULL, `transition` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_activity_transitions_timestamp` ON `activity_transitions` (`timestamp`)",
+            "CREATE INDEX IF NOT EXISTS `index_activity_transitions_createdAt` ON `activity_transitions` (`createdAt`)",
+            "CREATE TABLE IF NOT EXISTS `zones` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `category` TEXT NOT NULL, `latitude` REAL NOT NULL, `longitude` REAL NOT NULL, `radiusMeters` REAL NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `deletedAt` INTEGER, PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_zones_updatedAt` ON `zones` (`updatedAt`)",
+        )
+
+        internal val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_29_30_SQL.forEach { db.execSQL(it) }
+            }
+        }
 
         @Volatile private var INSTANCE: PulseLoopDatabase? = null
 
@@ -641,6 +701,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_26_27,
                         MIGRATION_27_28,
                         MIGRATION_28_29,
+                        MIGRATION_29_30,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

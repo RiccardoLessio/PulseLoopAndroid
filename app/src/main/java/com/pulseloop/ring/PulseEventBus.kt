@@ -119,8 +119,14 @@ sealed class PulseEvent {
     ) : PulseEvent()
     data class BloodSugarSample(val mgdl: Double, val timestamp: java.time.Instant) : PulseEvent()
     data class HistoryMeasurement(val kind: MeasurementKind, val value: Double, val timestamp: java.time.Instant) : PulseEvent()
-    data class StressSample(val value: Int, val timestamp: java.time.Instant, val isHistory: Boolean = false) : PulseEvent()
-    data class HrvSample(val value: Int, val timestamp: java.time.Instant) : PulseEvent()
+    /** [sourceRaw] overrides the stored source (adaptive sampling tags its spot readings). */
+    data class StressSample(
+        val value: Int,
+        val timestamp: java.time.Instant,
+        val isHistory: Boolean = false,
+        val sourceRaw: String? = null,
+    ) : PulseEvent()
+    data class HrvSample(val value: Int, val timestamp: java.time.Instant, val sourceRaw: String? = null) : PulseEvent()
     /** A value streamed during an on-demand HRV/stress/temperature measurement. Never stored —
      *  the coordinator settles the run and publishes the one reading as a sample event above. */
     data class SpotVitalSample(val vital: SpotVital, val value: Double, val timestamp: java.time.Instant) : PulseEvent()

@@ -9,6 +9,13 @@ import com.pulseloop.data.MeasurementDeletionDTO
 import com.pulseloop.data.SleepSessionDTO
 import com.pulseloop.data.SleepStageBlockDTO
 import com.pulseloop.data.entity.ActivityBucketEntity
+import com.pulseloop.data.entity.ActivityLabelEntity
+import com.pulseloop.data.entity.ActivityTransitionEntity
+import com.pulseloop.data.entity.AdaptiveTransitionEntity
+import com.pulseloop.data.entity.DiaryEntryEntity
+import com.pulseloop.data.entity.LocationPointEntity
+import com.pulseloop.data.entity.PhoneUsageHourlyEntity
+import com.pulseloop.data.entity.ZoneEntity
 import com.pulseloop.data.entity.ActivityDailyEntity
 import com.pulseloop.data.entity.BatterySampleEntity
 import com.pulseloop.data.entity.DeviceEntity
@@ -39,11 +46,91 @@ data class RingHubBatch(
     val batterySamples: List<BatterySampleDTO> = emptyList(),
     val sleepSessions: List<SleepSessionDTO> = emptyList(),
     val sleepStageBlocks: List<SleepStageBlockDTO> = emptyList(),
+    // v0.2 context streams (ringhub/schemas.py: same names, all optional on the server).
+    val adaptiveTransitions: List<AdaptiveTransitionDTO> = emptyList(),
+    val activityLabels: List<ActivityLabelDTO> = emptyList(),
+    val diaryEntries: List<DiaryEntryDTO> = emptyList(),
+    val phoneUsageHourly: List<PhoneUsageHourlyDTO> = emptyList(),
+    val locationPoints: List<LocationPointDTO> = emptyList(),
+    val activityTransitions: List<ActivityTransitionDTO> = emptyList(),
+    val zones: List<ZoneDTO> = emptyList(),
 ) {
     val rowCount: Int
         get() = devices.size + measurements.size + measurementDeletions.size + activityDaily.size +
-            activityBuckets.size + batterySamples.size + sleepSessions.size + sleepStageBlocks.size
+            activityBuckets.size + batterySamples.size + sleepSessions.size + sleepStageBlocks.size +
+            adaptiveTransitions.size + activityLabels.size + diaryEntries.size + phoneUsageHourly.size +
+            locationPoints.size + activityTransitions.size + zones.size
 }
+
+// v0.2 DTOs: the Room entity fields one for one (ContextEntities.kt).
+
+@Serializable
+data class AdaptiveTransitionDTO(
+    val id: String, val timestamp: Long, val fromState: String, val toState: String, val reason: String,
+    val episodeId: String? = null, val valuesJson: String? = null, val createdAt: Long,
+)
+
+@Serializable
+data class ActivityLabelDTO(
+    val id: String, val timestamp: Long, val category: String, val text: String? = null, val suggested: String? = null,
+    val source: String, val episodeId: String? = null, val transitionId: String? = null,
+    val createdAt: Long, val updatedAt: Long, val deletedAt: Long? = null,
+)
+
+@Serializable
+data class DiaryEntryDTO(
+    val id: String, val date: String,
+    val caffeine: Boolean? = null, val lateCaffeine: Boolean? = null, val caffeineLastTime: String? = null,
+    val alcohol: Boolean? = null, val alcoholUnits: Double? = null, val alcoholLastTime: String? = null,
+    val lateMeal: Boolean? = null, val lateMealTime: String? = null,
+    val sport: Boolean? = null, val sportStart: String? = null, val sportDurationMin: Int? = null, val sportIntensity: Int? = null,
+    val screensInBed: Boolean? = null, val mood: Int? = null, val perceivedStress: Int? = null, val illness: Boolean? = null,
+    val notes: String? = null, val morningMood: Int? = null, val morningFeeling: Int? = null,
+    val createdAt: Long, val updatedAt: Long,
+)
+
+@Serializable
+data class PhoneUsageHourlyDTO(
+    val id: String, val hourStart: Long, val screenOnMinutes: Double, val unlocks: Int, val lastScreenOffAt: Long? = null, val updatedAt: Long,
+)
+
+@Serializable
+data class LocationPointDTO(
+    val id: String, val timestamp: Long, val latitude: Double, val longitude: Double,
+    val accuracy: Float? = null, val speed: Float? = null, val provider: String? = null, val createdAt: Long,
+)
+
+@Serializable
+data class ActivityTransitionDTO(val id: String, val timestamp: Long, val activityType: String, val transition: String, val createdAt: Long)
+
+@Serializable
+data class ZoneDTO(
+    val id: String, val name: String, val category: String, val latitude: Double, val longitude: Double,
+    val radiusMeters: Double, val createdAt: Long, val updatedAt: Long, val deletedAt: Long? = null,
+)
+
+internal fun AdaptiveTransitionEntity.toDto() = AdaptiveTransitionDTO(id, timestamp, fromState, toState, reason, episodeId, valuesJson, createdAt)
+
+internal fun ActivityLabelEntity.toDto() = ActivityLabelDTO(id, timestamp, category, text, suggested, source, episodeId, transitionId, createdAt, updatedAt, deletedAt)
+
+internal fun DiaryEntryEntity.toDto() = DiaryEntryDTO(
+    id = id, date = date, caffeine = caffeine, lateCaffeine = lateCaffeine, caffeineLastTime = caffeineLastTime,
+    alcohol = alcohol, alcoholUnits = alcoholUnits, alcoholLastTime = alcoholLastTime, lateMeal = lateMeal,
+    lateMealTime = lateMealTime, sport = sport, sportStart = sportStart, sportDurationMin = sportDurationMin,
+    sportIntensity = sportIntensity, screensInBed = screensInBed, mood = mood, perceivedStress = perceivedStress,
+    illness = illness, notes = notes, morningMood = morningMood, morningFeeling = morningFeeling,
+    createdAt = createdAt, updatedAt = updatedAt,
+)
+
+internal fun PhoneUsageHourlyEntity.toDto() = PhoneUsageHourlyDTO(id, hourStart, screenOnMinutes, unlocks, lastScreenOffAt, updatedAt)
+
+internal fun LocationPointEntity.toDto() = LocationPointDTO(id, timestamp, latitude, longitude, accuracy, speed, provider, createdAt)
+
+internal fun ActivityTransitionEntity.toDto() = ActivityTransitionDTO(id, timestamp, activityType, transition, createdAt)
+
+internal fun ZoneEntity.toDto() = ZoneDTO(id, name, category, latitude, longitude, radiusMeters, createdAt, updatedAt, deletedAt)
+
+internal fun ZoneDTO.toEntity() = ZoneEntity(id, name, category, latitude, longitude, radiusMeters, createdAt, updatedAt, deletedAt)
 
 /** The subset of ring-hub's `IngestResult` the app reads back. */
 @Serializable

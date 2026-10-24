@@ -65,6 +65,7 @@ class RingHubSyncWorker(
                     it.copy(lastAttemptAt = started, lastSuccessAt = System.currentTimeMillis(), lastOk = true, lastStatus = summary)
                 }
                 Log.i(TAG, "pass done: $summary ${result.rows}")
+                pullContext(client, db)
                 Result.success()
             } catch (e: RingHubException) {
                 val status = when (e.kind) {
@@ -81,6 +82,26 @@ class RingHubSyncWorker(
                 Log.w(TAG, "unexpected response", e)
                 Result.failure()
             }
+        }
+    }
+
+    /**
+     * What flows back from ring-hub: zones (a place promoted in the dashboard) and the
+     * auto-detected places (label suggestions, "promote to zone"). Best effort: a server that
+     * predates v0.2 answers 404 and the pass still counts as a success.
+     */
+    private suspend fun pullContext(client: RingHubClient, db: PulseLoopDatabase) {
+        try {
+            val zoneDao = db.zoneDao()
+            for (remote in client.zones()) {
+                val local = zoneDao.byId(remote.id)
+                if (local == null || remote.updatedAt > local.updatedAt) zoneDao.upsert(remote.toEntity())
+            }
+            com.pulseloop.context.ContextPrefs.get(applicationContext).savePlaces(client.places())
+        } catch (e: RingHubException) {
+            Log.i(TAG, "context pull skipped: ${e.message}")
+        } catch (e: kotlinx.serialization.SerializationException) {
+            Log.i(TAG, "context pull skipped: ${e.message}")
         }
     }
 
@@ -149,4 +170,18 @@ internal class RoomRingHubSource(private val db: PulseLoopDatabase) : RingHubSou
     override suspend fun stageBlocksFor(sessionIds: List<String>) =
         // SQLite caps bound parameters (999 on older builds); query in slices.
         sessionIds.chunked(500).flatMap { db.sleepStageBlockDao().forSessions(it) }
+    override suspend fun adaptiveTransitionsAfter(ts: Long, key: String, limit: Int) =
+        db.adaptiveTransitionDao().createdAfter(ts, key, limit)
+    override suspend fun activityLabelsAfter(ts: Long, key: String, limit: Int) =
+        db.activityLabelDao().updatedAfter(ts, key, limit)
+    override suspend fun diaryEntriesAfter(ts: Long, key: String, limit: Int) =
+        db.diaryEntryDao().updatedAfter(ts, key, limit)
+    override suspend fun phoneUsageAfter(ts: Long, key: String, limit: Int) =
+        db.phoneUsageHourlyDao().updatedAfter(ts, key, limit)
+    override suspend fun locationPointsAfter(ts: Long, key: String, limit: Int) =
+        db.locationPointDao().createdAfter(ts, key, limit)
+    override suspend fun activityTransitionsAfter(ts: Long, key: String, limit: Int) =
+        db.activityTransitionDao().createdAfter(ts, key, limit)
+    override suspend fun zonesAfter(ts: Long, key: String, limit: Int) =
+        db.zoneDao().updatedAfter(ts, key, limit)
 }

@@ -170,6 +170,18 @@ fun SettingsScreen(
                 add(SettingsRowItem(Icons.Filled.CloudUpload, PulseColors.success, "Server ring-hub") {
                     navigate("settings/ringhub")
                 })
+                add(SettingsRowItem(Icons.Filled.Insights, PulseColors.success, "Modalità adattiva") {
+                    navigate("settings/adaptive")
+                })
+                add(SettingsRowItem(Icons.Filled.EditNote, PulseColors.success, "Diario") {
+                    navigate("diary")
+                })
+                add(SettingsRowItem(Icons.Filled.Label, PulseColors.success, "Etichette attività") {
+                    navigate("labels")
+                })
+                add(SettingsRowItem(Icons.Filled.Place, PulseColors.success, "Contesto") {
+                    navigate("settings/context")
+                })
                 add(SettingsRowItem(Icons.Filled.Info, PulseColors.textMuted, "About PulseLoop") {
                     navigate("settings/about")
                 })

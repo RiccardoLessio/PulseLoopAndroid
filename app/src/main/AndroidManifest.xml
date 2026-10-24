@@ -35,6 +35,24 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
+    <!-- v0.2 context. Adaptive sampling holds the ring link from a foreground service
+         (Android 14+: type connectedDevice, prerequisite BLUETOOTH_CONNECT); automatic location
+         shares the same service with type location. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Screen time: granted by the user in Settings → Usage access, never at runtime. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- Evening diary at the time the user set: exact alarm when allowed, else WorkManager. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Self-update: fetch the GitHub release manifest/APK and install it -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -119,6 +137,35 @@
                 android:name="android.service.notification.disabled_filter_types"
                 android:value="conversations|alerting|ongoing|silent" />
         </service>
+
+        <!-- v0.2: adaptive monitoring + automatic location ("Monitoraggio attivo"). -->
+        <service
+            android:name=".context.MonitorService"
+            android:foregroundServiceType="connectedDevice|location"
+            android:exported="false" />
+
+        <receiver android:name=".context.ActivityTransitionReceiver" android:exported="false" />
+        <receiver android:name=".labels.LabelActionReceiver" android:exported="false" />
+        <receiver android:name=".diary.DiaryAlarmReceiver" android:exported="false" />
+        <receiver android:name=".diary.DiaryActionReceiver" android:exported="false" />
+        <receiver android:name=".diary.ContextBootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The short diary the evening full-screen intent opens over the lock screen. -->
+        <activity
+            android:name=".diary.DiaryQuickActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleInstance"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.PulseLoop.DiaryQuick" />
 
         <!-- Phase 6: Workout foreground service -->
         <service

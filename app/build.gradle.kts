@@ -171,6 +171,8 @@ dependencies {
 
     // Phase 6: Location for GPS route recording
     implementation("com.google.android.gms:play-services-location:21.3.0")
+    // v0.2 zones: OpenStreetMap map view, no API key (the workout route map is a plain Canvas).
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 
     // Phase 7: Polish — WorkManager, EncryptedSharedPreferences
     implementation("androidx.work:work-runtime-ktx:2.9.1")

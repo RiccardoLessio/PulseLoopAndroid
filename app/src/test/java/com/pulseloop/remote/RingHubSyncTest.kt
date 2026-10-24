@@ -1,6 +1,13 @@
 package com.pulseloop.remote
 
 import com.pulseloop.data.entity.ActivityBucketEntity
+import com.pulseloop.data.entity.ActivityLabelEntity
+import com.pulseloop.data.entity.ActivityTransitionEntity
+import com.pulseloop.data.entity.AdaptiveTransitionEntity
+import com.pulseloop.data.entity.DiaryEntryEntity
+import com.pulseloop.data.entity.LocationPointEntity
+import com.pulseloop.data.entity.PhoneUsageHourlyEntity
+import com.pulseloop.data.entity.ZoneEntity
 import com.pulseloop.data.entity.ActivityDailyEntity
 import com.pulseloop.data.entity.BatterySampleEntity
 import com.pulseloop.data.entity.DeviceEntity
@@ -45,6 +52,13 @@ class RingHubSyncTest {
         val battery = mutableListOf<BatterySampleEntity>()
         val sessions = mutableListOf<SleepSessionEntity>()
         val blocks = mutableListOf<SleepStageBlockEntity>()
+        val transitions = mutableListOf<AdaptiveTransitionEntity>()
+        val labels = mutableListOf<ActivityLabelEntity>()
+        val diary = mutableListOf<DiaryEntryEntity>()
+        val usage = mutableListOf<PhoneUsageHourlyEntity>()
+        val points = mutableListOf<LocationPointEntity>()
+        val activities = mutableListOf<ActivityTransitionEntity>()
+        val zones = mutableListOf<ZoneEntity>()
 
         private fun <T> page(rows: List<T>, ts: Long, key: String, limit: Int, stamp: (T) -> Long, id: (T) -> String) =
             rows.filter { stamp(it) > ts || (stamp(it) == ts && id(it) > key) }
@@ -61,6 +75,13 @@ class RingHubSyncTest {
         override suspend fun batterySamplesAfter(ts: Long, key: String, limit: Int) = page(battery, ts, key, limit, { it.createdAt }, { it.id })
         override suspend fun sleepSessionsAfter(ts: Long, key: String, limit: Int) = page(sessions, ts, key, limit, { it.updatedAt }, { it.id })
         override suspend fun stageBlocksFor(sessionIds: List<String>) = blocks.filter { it.sessionId in sessionIds }
+        override suspend fun adaptiveTransitionsAfter(ts: Long, key: String, limit: Int) = page(transitions, ts, key, limit, { it.createdAt }, { it.id })
+        override suspend fun activityLabelsAfter(ts: Long, key: String, limit: Int) = page(labels, ts, key, limit, { it.updatedAt }, { it.id })
+        override suspend fun diaryEntriesAfter(ts: Long, key: String, limit: Int) = page(diary, ts, key, limit, { it.updatedAt }, { it.id })
+        override suspend fun phoneUsageAfter(ts: Long, key: String, limit: Int) = page(usage, ts, key, limit, { it.updatedAt }, { it.id })
+        override suspend fun locationPointsAfter(ts: Long, key: String, limit: Int) = page(points, ts, key, limit, { it.createdAt }, { it.id })
+        override suspend fun activityTransitionsAfter(ts: Long, key: String, limit: Int) = page(activities, ts, key, limit, { it.createdAt }, { it.id })
+        override suspend fun zonesAfter(ts: Long, key: String, limit: Int) = page(zones, ts, key, limit, { it.updatedAt }, { it.id })
     }
 
     private fun hr(id: String, createdAt: Long, ts: Long = createdAt) = MeasurementEntity(
@@ -208,6 +229,7 @@ class RingHubSyncTest {
             sessions += session("sleep-1", updatedAt = 1_792_485_000_000); blocks += blocksFor("sleep-1", 2)
         }
         source.device = source.device!!.copy(updatedAt = 1_792_485_000_000, createdAt = 1_792_000_000_000)
+        source.addContext()
         val sent = mutableListOf<RingHubBatch>()
         sync(source, MemoryWatermarks(), sent).run()
 
@@ -218,6 +240,10 @@ class RingHubSyncTest {
             measurementDeletions = sent.flatMap { it.measurementDeletions }, activityDaily = sent.flatMap { it.activityDaily },
             activityBuckets = sent.flatMap { it.activityBuckets }, batterySamples = sent.flatMap { it.batterySamples },
             sleepSessions = sent.flatMap { it.sleepSessions }, sleepStageBlocks = sent.flatMap { it.sleepStageBlocks },
+            adaptiveTransitions = sent.flatMap { it.adaptiveTransitions }, activityLabels = sent.flatMap { it.activityLabels },
+            diaryEntries = sent.flatMap { it.diaryEntries }, phoneUsageHourly = sent.flatMap { it.phoneUsageHourly },
+            locationPoints = sent.flatMap { it.locationPoints }, activityTransitions = sent.flatMap { it.activityTransitions },
+            zones = sent.flatMap { it.zones },
         )
         val text = ringHubJson.encodeToString(RingHubBatch.serializer(), combined)
         val obj = ringHubJson.parseToJsonElement(text).jsonObject
@@ -233,8 +259,79 @@ class RingHubSyncTest {
             assertFalse("$list is empty", (obj[list]!!.jsonArray).isEmpty())
         }
         assertTrue(obj["devices"]!!.jsonArray.first() is JsonObject)
+        for (list in listOf("adaptiveTransitions", "activityLabels", "diaryEntries", "phoneUsageHourly", "locationPoints", "activityTransitions", "zones")) {
+            assertFalse("$list is empty", (obj[list]!!.jsonArray).isEmpty())
+        }
+        val diary = obj["diaryEntries"]!!.jsonArray.single().jsonObject
+        assertEquals("2026-10-20", diary["date"]!!.jsonPrimitive.content)
+        assertEquals("true", diary["lateCaffeine"]!!.jsonPrimitive.content)
+        assertEquals("null", diary["alcohol"].toString())   // unknown travels as null, never false
 
         // Left in the build dir for scripts/validate (not part of the assertion).
         File("build/ringhub-sample-batch.json").apply { parentFile?.mkdirs() }.writeText(text)
+    }
+
+    private val T = 1_792_485_000_000L
+
+    private fun MemorySource.addContext() {
+        transitions += AdaptiveTransitionEntity(id = "tr-1", timestamp = T, fromState = "BASELINE", toState = "WATCH", reason = "hr_high", episodeId = "ep-1", valuesJson = "{\"hr\":104}", createdAt = T)
+        labels += ActivityLabelEntity(id = "lab-1", timestamp = T, category = "meeting", suggested = "work", episodeId = "ep-1", transitionId = "tr-1", createdAt = T, updatedAt = T)
+        diary += DiaryEntryEntity(id = "diary:2026-10-20", date = "2026-10-20", lateCaffeine = true, caffeine = true, mood = 4, createdAt = T, updatedAt = T)
+        usage += PhoneUsageHourlyEntity(id = "usage:1792483200000", hourStart = 1_792_483_200_000, screenOnMinutes = 12.5, unlocks = 3, lastScreenOffAt = T - 60_000, updatedAt = T)
+        points += LocationPointEntity(id = "loc-1", timestamp = T, latitude = 45.07, longitude = 7.68, accuracy = 25f, speed = 0f, provider = "fused", createdAt = T)
+        activities += ActivityTransitionEntity(id = "act-1", timestamp = T, activityType = "IN_VEHICLE", transition = "ENTER", createdAt = T)
+        zones += ZoneEntity(id = "zone-home", name = "Casa", category = "home", latitude = 45.07, longitude = 7.68, radiusMeters = 150.0, createdAt = T, updatedAt = T)
+    }
+
+    @Test
+    fun `v0_2 streams are sent with their own watermarks`() = runTest {
+        val source = MemorySource().apply { device = null; addContext() }
+        val marks = MemoryWatermarks()
+        val sent = mutableListOf<RingHubBatch>()
+        val result = sync(source, marks, sent).run()
+
+        for (stream in listOf(
+            RingHubStream.ADAPTIVE_TRANSITIONS, RingHubStream.ACTIVITY_LABELS, RingHubStream.DIARY_ENTRIES,
+            RingHubStream.PHONE_USAGE_HOURLY, RingHubStream.LOCATION_POINTS, RingHubStream.ACTIVITY_TRANSITIONS, RingHubStream.ZONES,
+        )) {
+            assertEquals(stream.name, 1, result.rows[stream])
+            assertEquals(stream.name, T, marks.marks[stream])
+        }
+        // One request per stream, each carrying only its own list.
+        assertEquals(7, sent.size)
+        assertTrue(sent.all { it.rowCount == 1 })
+        // Zones go before location points (the server rebuilds places on zones).
+        val zoneIdx = sent.indexOfFirst { it.zones.isNotEmpty() }
+        val pointIdx = sent.indexOfFirst { it.locationPoints.isNotEmpty() }
+        assertTrue(zoneIdx in 0 until pointIdx)
+    }
+
+    @Test
+    fun `an edited label or diary day is re-sent, an old transition is not`() = runTest {
+        val source = MemorySource().apply { device = null; addContext() }
+        val marks = MemoryWatermarks()
+        sync(source, marks, mutableListOf()).run()
+
+        source.labels[0] = source.labels[0].copy(category = "traffic", updatedAt = T + 600_000)
+        source.diary[0] = source.diary[0].copy(alcohol = true, updatedAt = T + 600_000)
+        source.transitions.clear()
+        source.transitions += AdaptiveTransitionEntity(id = "tr-0", timestamp = T - 3_600_000, fromState = "BASELINE", toState = "WATCH", reason = "hr_high", createdAt = T - 3_600_000)
+        val sent = mutableListOf<RingHubBatch>()
+        sync(source, marks, sent).run()
+
+        assertEquals(listOf("traffic"), sent.flatMap { it.activityLabels }.map { it.category })
+        assertEquals(listOf(true), sent.flatMap { it.diaryEntries }.map { it.alcohol })
+        assertTrue(sent.flatMap { it.adaptiveTransitions }.isEmpty())   // behind the watermark + overlap
+    }
+
+    @Test
+    fun `zone dto round-trips for the pull from the server`() {
+        val zone = ZoneEntity(id = "z", name = "Palestra", category = "gym", latitude = 1.0, longitude = 2.0, radiusMeters = 120.0, createdAt = 1, updatedAt = 2, deletedAt = 3)
+        assertEquals(zone, zone.toDto().toEntity())
+        val parsed = ringHubJson.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(ZoneDTO.serializer()),
+            """[{"id":"z","name":"Palestra","category":"gym","latitude":1.0,"longitude":2.0,"radiusMeters":120.0,"createdAt":1,"updatedAt":2,"deletedAt":null}]""",
+        )
+        assertEquals(null, parsed.single().deletedAt)
     }
 }

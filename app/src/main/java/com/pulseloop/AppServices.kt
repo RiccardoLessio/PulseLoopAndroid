@@ -66,6 +66,24 @@ class AppServices private constructor(context: Context) {
     )
 
     private val startup = StartupGate()
+    private val coreStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    init {
+        // The full service set now exists: it owns persistence from here on.
+        com.pulseloop.service.BackgroundPersistence.stop()
+    }
+
+    /**
+     * Persistence, the coordinator's event handling and the connect → startup-sync wiring, for a
+     * process entry point that has no UI composition (the adaptive monitor service). Idempotent;
+     * the UI startup still runs its own `start()`s, which only restart the collectors.
+     */
+    fun ensureCoreStarted() {
+        if (!coreStarted.compareAndSet(false, true)) return
+        persistence.start()
+        coordinator.start()
+        if (bleClient.onConnected == null) bleClient.onConnected = { coordinator.runStartupSequence() }
+    }
 
     /** Where the one-shot startup runs: process-long, so a disposed composition can't cancel it. */
     val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -80,6 +98,9 @@ class AppServices private constructor(context: Context) {
 
     companion object {
         @Volatile private var instance: AppServices? = null
+
+        /** The process's service set if something already built it, without building one. */
+        fun existing(): AppServices? = instance
 
         fun get(context: Context): AppServices =
             instance ?: synchronized(this) {

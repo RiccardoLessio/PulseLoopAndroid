@@ -1,0 +1,91 @@
+package com.pulseloop.adaptive
+
+import com.pulseloop.adaptive.AdaptiveInputs.LiveSteps
+import com.pulseloop.adaptive.AdaptiveInputs.Reading
+import com.pulseloop.adaptive.AdaptiveInputs.StepBucket
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import java.time.LocalDateTime
+import java.time.ZoneId
+
+class AdaptiveInputsTest {
+    private val zone = ZoneId.of("Europe/Rome")
+    private val min = 60_000L
+    private val now = LocalDateTime.of(2026, 10, 20, 15, 7).atZone(zone).toInstant().toEpochMilli()
+    private val quarter = now - (now % (15 * min))
+
+    @Test
+    fun `median of odd and even lists`() {
+        assertEquals(3.0, AdaptiveInputs.median(listOf(5.0, 1.0, 3.0))!!, 0.0)
+        assertEquals(2.5, AdaptiveInputs.median(listOf(4.0, 1.0, 3.0, 2.0))!!, 0.0)
+        assertNull(AdaptiveInputs.median(emptyList()))
+    }
+
+    @Test
+    fun `bucket steps count any overlapping bucket in full`() {
+        val buckets = listOf(StepBucket(quarter - 15 * min, 40), StepBucket(quarter, 3))
+        // previous 2 min fall in the current bucket only
+        assertEquals(3, AdaptiveInputs.stepsInWindow(buckets, emptyList(), now - 2 * min, now))
+        // previous 10 min overlap both buckets
+        assertEquals(43, AdaptiveInputs.stepsInWindow(buckets, emptyList(), now - 10 * min, now))
+        // no rows = no steps
+        assertEquals(0, AdaptiveInputs.stepsInWindow(emptyList(), emptyList(), now - 10 * min, now))
+    }
+
+    @Test
+    fun `live cumulative totals beat buckets when they bracket the window`() {
+        val buckets = listOf(StepBucket(quarter, 300))
+        val live = listOf(LiveSteps(now - 10 * min, 5000), LiveSteps(now - 2 * min, 5004), LiveSteps(now, 5004))
+        assertEquals(4, AdaptiveInputs.stepsInWindow(buckets, live, now - 10 * min, now))
+        assertEquals(0, AdaptiveInputs.stepsInWindow(buckets, live, now - 2 * min, now))
+        // live data that doesn't reach back far enough: fall back to buckets
+        assertEquals(300, AdaptiveInputs.stepsInWindow(buckets, live.takeLast(1), now - 10 * min, now))
+    }
+
+    @Test
+    fun `resting HR median ignores samples taken while moving and needs 6`() {
+        val hr = (1..8).map { Reading(now - it * 15 * min, 60.0 + it) }
+        // A walk 65–50 min ago: the samples 60 and 45 min ago have it in their previous 10 min.
+        val walking = listOf(StepBucket(now - 65 * min, 500))
+        val median = AdaptiveInputs.restingHrMedian(hr, walking, emptyList(), now)!!
+        assertEquals(65.5, median, 0.0)   // 61, 62, 65, 66, 67, 68
+        assertNull(AdaptiveInputs.restingHrMedian(hr.take(5), emptyList(), emptyList(), now))
+    }
+
+    @Test
+    fun `HRV baseline uses the last 6 resting readings and excludes the current one`() {
+        val hrv = (0..9).map { Reading(now - it * 30 * min, if (it < 6) 40.0 else 80.0) }
+        assertEquals(40.0, AdaptiveInputs.hrvMedian(hrv, emptyList(), emptyList(), now)!!, 0.0)
+        assertNull(AdaptiveInputs.hrvMedian(hrv.take(2), emptyList(), emptyList(), now))
+    }
+
+    @Test
+    fun `asleep heuristics`() {
+        assertTrue(AdaptiveInputs.asleep(now, lastSleepEnd = now - 10 * min, bedtimeActive = false, stepsPrev30 = 50, zone = zone))
+        assertTrue(AdaptiveInputs.asleep(now, null, bedtimeActive = true, stepsPrev30 = 50, zone = zone))
+        assertFalse(AdaptiveInputs.asleep(now, null, false, 0, zone))   // 15:07, still
+        val night = LocalDateTime.of(2026, 10, 20, 23, 40).atZone(zone).toInstant().toEpochMilli()
+        assertTrue(AdaptiveInputs.asleep(night, null, false, 0, zone))
+        assertFalse(AdaptiveInputs.asleep(night, null, false, 30, zone))
+        assertFalse(AdaptiveInputs.asleep(night, null, false, null, zone))
+    }
+
+    @Test
+    fun `sample takes only fresh readings`() {
+        val s = AdaptiveInputs.sample(
+            now = now,
+            hr = listOf(Reading(now - 20 * min, 110.0)),
+            stress = listOf(Reading(now - 20 * min, 75.0)),
+            hrv = listOf(Reading(now - 40 * min, 30.0)),
+            buckets = emptyList(), live = emptyList(), battery = 55, lastSleepEnd = null, bedtimeActive = false, zone = zone,
+        )
+        assertNull(s.hr)          // 20 min old > 12 min
+        assertEquals(75, s.stress)  // 20 min old ≤ 35 min
+        assertNull(s.hrv)         // 40 min old
+        assertEquals(0, s.stepsPrev10)
+        assertEquals(55, s.batteryPercent)
+    }
+}

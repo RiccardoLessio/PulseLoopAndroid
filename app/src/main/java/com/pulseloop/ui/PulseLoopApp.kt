@@ -215,6 +215,12 @@ fun PulseLoopApp() {
                 // Schedule periodic background sync (matches official app behavior)
                 RingSyncWorker.schedule(context.applicationContext)
                 com.pulseloop.remote.RingHubSyncWorker.schedulePeriodic(context.applicationContext)
+                // v0.2 context: re-arm what the OS may have dropped (alarms, AR registration,
+                // the monitor service if location tracking or an episode needs it).
+                com.pulseloop.diary.DiaryReminders.reschedule(context.applicationContext)
+                com.pulseloop.context.ActivityRecognitionManager.sync(context.applicationContext)
+                com.pulseloop.context.PhoneContextWorker.schedule(context.applicationContext)
+                com.pulseloop.context.MonitorService.refresh(context.applicationContext)
 
                 // NOTE: demo data is never auto-seeded. A clean install starts empty so the UI
                 // reflects only real ring data. Demo data is seeded exclusively via the
@@ -249,12 +255,15 @@ fun PulseLoopApp() {
                     }
                     Lifecycle.Event.ON_STOP -> {
                         if (liveWorkout.state.value.activeSession != null) return@LifecycleEventObserver
+                        // An adaptive episode keeps the link from its foreground service.
+                        if (com.pulseloop.context.MonitorService.holdsRingLink) return@LifecycleEventObserver
                         bgDisconnectJob?.cancel()
                         // Default dispatcher so the timer fires while backgrounded (a UI-frame
                         // clock would stall until the next foreground frame).
                         bgDisconnectJob = bgDisconnectScope.launch(Dispatchers.Default) {
                             delay(BACKGROUND_DISCONNECT_GRACE_MS)
-                            if (liveWorkout.state.value.activeSession == null) bleClient.disconnect()
+                            if (liveWorkout.state.value.activeSession == null &&
+                                !com.pulseloop.context.MonitorService.holdsRingLink) bleClient.disconnect()
                         }
                     }
                     else -> {}
@@ -282,6 +291,15 @@ fun PulseLoopApp() {
         // Tab order + icons mirror iOS MainTab (AppTheme.swift): Today (circle.circle),
         // Vitals (heart), Activity (waveform.path.ecg), Sleep (moon), Coach (sparkles).
         val navController = rememberNavController()
+
+        // Notification taps (labels, diary, monitor) carry a route; navigate once the graph exists.
+        val pendingRoute by DeepLinks.pending.collectAsState()
+        LaunchedEffect(pendingRoute) {
+            val route = pendingRoute ?: return@LaunchedEffect
+            DeepLinks.consume()
+            delay(300)   // let NavHost attach its graph on a cold start
+            runCatching { navController.navigate(route) { launchSingleTop = true } }
+        }
 
         // First-launch gate (iOS #48): show the onboarding flow until it's completed.
         // Existing installs that already have a completed profile or a paired ring are
@@ -632,6 +650,28 @@ fun PulseLoopApp() {
                 }
                 paddedComposable("settings/ringhub") {
                     RingHubSettingsScreen(onBack = { navController.popBackStack() })
+                }
+                paddedComposable("settings/adaptive") {
+                    AdaptiveSettingsScreen(onBack = { navController.popBackStack() }, onOpenLabels = { navController.navigate("labels") })
+                }
+                paddedComposable("labels") {
+                    ActivityLabelsScreen(onBack = { navController.popBackStack() })
+                }
+                composable(
+                    "diary?date={date}",
+                    arguments = listOf(androidx.navigation.navArgument("date") {
+                        type = androidx.navigation.NavType.StringType; nullable = true; defaultValue = null
+                    }),
+                ) { entry ->
+                    Box(Modifier.fillMaxSize().padding(padding)) {
+                        DiaryScreen(onBack = { navController.popBackStack() }, initialDate = entry.arguments?.getString("date"))
+                    }
+                }
+                paddedComposable("settings/context") {
+                    ContextSettingsScreen(onBack = { navController.popBackStack() }, onOpenZones = { navController.navigate("settings/zones") })
+                }
+                paddedComposable("settings/zones") {
+                    ZonesScreen(onBack = { navController.popBackStack() })
                 }
                 paddedComposable("settings/nutrition") {
                     NutritionSettingsScreen(

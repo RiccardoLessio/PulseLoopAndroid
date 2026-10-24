@@ -311,7 +311,7 @@ class EventPersistenceSubscriber(
                     kindRaw = MeasurementKind.STRESS.name,
                     value = event.value.toDouble(), unit = "",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "colmi",
+                    sourceRaw = event.sourceRaw ?: "colmi",
                 )
                 if (event.isHistory) upsertUnlessDeleted(measurement)
                 else db.measurementDao().insert(measurement)
@@ -321,7 +321,7 @@ class EventPersistenceSubscriber(
                     kindRaw = MeasurementKind.HRV.name,
                     value = event.value.toDouble(), unit = "ms",
                     timestamp = event.timestamp.toEpochMilli(),
-                    sourceRaw = "live",
+                    sourceRaw = event.sourceRaw ?: "live",
                 ))
             }
             is PulseEvent.BloodPressureSample -> {
@@ -412,6 +412,8 @@ class EventPersistenceSubscriber(
                     HealthConnectExportWorker.enqueue(context)
                     // ring-hub push: same moment, same debounce; a no-op while disabled.
                     RingHubSyncWorker.enqueue(context)
+                    // Adaptive sampling: fresh history is the trigger evaluation's input.
+                    com.pulseloop.adaptive.AdaptiveController.onSyncCompleted(context)
                 }
             }
             is PulseEvent.HeartRateComplete -> {}
