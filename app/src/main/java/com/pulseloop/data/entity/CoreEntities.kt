@@ -166,6 +166,8 @@ data class DeviceMeasurementConfigEntity(
     val hrvEnabled: Boolean = true,
     val temperatureEnabled: Boolean = true,
     val updatedAt: Long = System.currentTimeMillis(),
+    /** All-day temperature interval, minutes (Colmi only). 5-minute steps, 5..60; default 5. */
+    val temperatureIntervalMinutes: Int = 5,
 )
 
 /**

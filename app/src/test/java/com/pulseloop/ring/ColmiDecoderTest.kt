@@ -403,6 +403,17 @@ class ColmiDecoderTest {
     }
 
     @Test
+    fun `temp pref readout carries the interval byte, zero meaning not reported`() {
+        assertEquals(
+            ColmiTempPrefReadout(enabled = true, intervalMinutes = 5),
+            ColmiDecoder.decodeTempPrefReadout(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x01, 5, 5, 10))))
+        assertEquals(
+            ColmiTempPrefReadout(enabled = true, intervalMinutes = null),
+            ColmiDecoder.decodeTempPrefReadout(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x01))))
+        assertNull(ColmiDecoder.decodeTempPrefReadout(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x02, 0x01, 5))))
+    }
+
+    @Test
     fun `realtime heart rate no reading reply`() {
         val frame = hexToBytes("9eee000000000000000000000000008c")
         val events = ColmiDecoder.decodeNormal(frame)

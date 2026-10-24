@@ -87,8 +87,16 @@ data class MeasurementSettings(
     val stressEnabled: Boolean,
     val hrvEnabled: Boolean,
     val temperatureEnabled: Boolean,
+    /**
+     * All-day skin-temperature interval in minutes (Colmi `0x3A` record, 5-min steps 5..60).
+     * The ring firmware's own default is 30; 5 is this fork's default. Whether a given firmware
+     * honours less than 30 is only known from its read-back (see [ColmiTempPrefReadback]).
+     */
+    val temperatureIntervalMinutes: Int = DEFAULT_TEMPERATURE_INTERVAL_MINUTES,
 ) {
     companion object {
+        const val DEFAULT_TEMPERATURE_INTERVAL_MINUTES = 5
+
         /** The firmware default (matches the previous hard-coded Colmi startup behaviour). */
         val ALL_ON_DEFAULT = MeasurementSettings(
             hrEnabled = true, hrIntervalMinutes = 5,

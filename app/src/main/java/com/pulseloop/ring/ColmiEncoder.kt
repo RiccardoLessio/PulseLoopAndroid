@@ -104,12 +104,19 @@ object ColmiEncoder {
      * off, so the custom byte (38.5 °C) is inert. The old 4-byte `3a 03 02 <en>` form was the
      * same truncation bug class as the short 0x16 auto-HR write: RT-series firmware ACKs it but
      * reads interval = 0 and never arms background sampling.
+     *
+     * [intervalMinutes] is rounded down to a 5-minute multiple and clamped to 5..60 (the same
+     * grid as auto-HR). The default is the firmware's own 30; values below 30 are not confirmed
+     * on every firmware, which is why the sync engine reads the pref back after writing it.
      */
-    fun writeTempPref(enabled: Boolean): ByteArray = byteArrayOf(
+    fun writeTempPref(enabled: Boolean, intervalMinutes: Int = FIRMWARE_TEMP_INTERVAL_MINUTES): ByteArray = byteArrayOf(
         ColmiCommandID.AUTO_TEMP_PREF.toByte(), 0x03, ColmiCommandID.PREF_WRITE.toByte(),
         if (enabled) 0x01 else 0x00,
-        30, 5, 10, 0x00, 0xB9.toByte(),
+        ((intervalMinutes / 5) * 5).coerceIn(5, 60).toByte(), 5, 10, 0x00, 0xB9.toByte(),
     )
+
+    /** The temperature interval QRing documents as the firmware default. */
+    const val FIRMWARE_TEMP_INTERVAL_MINUTES = 30
 
     fun readGoals(): ByteArray = byteArrayOf(ColmiCommandID.GOALS.toByte(), ColmiCommandID.PREF_READ.toByte())
 

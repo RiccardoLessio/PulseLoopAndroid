@@ -32,6 +32,16 @@ class ColmiMeasurementSettingsTest {
             ColmiEncoder.writeTempPref(enabled = false))
     }
 
+    @Test
+    fun `temp pref write carries the requested interval on the 5-minute grid`() {
+        assertArrayEquals(
+            byteArrayOf(0x3A, 0x03, 0x02, 0x01, 5, 5, 10, 0x00, 0xB9.toByte()),
+            ColmiEncoder.writeTempPref(enabled = true, intervalMinutes = 5))
+        assertEquals(15.toByte(), ColmiEncoder.writeTempPref(enabled = true, intervalMinutes = 17)[4])
+        assertEquals(5.toByte(), ColmiEncoder.writeTempPref(enabled = true, intervalMinutes = 1)[4])
+        assertEquals(60.toByte(), ColmiEncoder.writeTempPref(enabled = true, intervalMinutes = 240)[4])
+    }
+
     // MARK: UserProfileValues mapping
 
     @Test
@@ -76,20 +86,24 @@ class ColmiMeasurementSettingsTest {
     }
 
     @Test
-    fun `startup with no persisted config does not force-write HR or temp prefs`() {
+    fun `startup with no persisted config writes the 5-minute defaults`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         engine.setMeasurementSettings(null)
         engine.runStartup()
         engine.destroy()
 
-        // No auto-HR write (0x16 0x02) and no temp write (0x3A 0x03 0x02) — the ring's own
-        // settings are read (0x16 0x01 / 0x3A 0x03 0x01) and seed the config instead.
-        assertTrue(writer.commands.none { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() })
-        assertTrue(writer.commands.none { it[0] == 0x3A.toByte() && it[2] == 0x02.toByte() })
+        // The ring's previous settings are still read (0x16 0x01 / 0x3A 0x03 0x01) for the log...
         assertTrue(writer.commands.any { it[0] == 0x16.toByte() && it[1] == 0x01.toByte() })
         assertTrue(writer.commands.any { it[0] == 0x3A.toByte() && it[2] == 0x01.toByte() })
-        // SpO2/stress/HRV stay force-enabled — the history sync depends on them.
+        // ...but the defaults are written: all-day HR on every 5 min, temperature on every 5 min.
+        val autoHr = writer.commands.single { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() }
+        assertEquals(0x01.toByte(), autoHr[2])
+        assertEquals(5.toByte(), autoHr[3])
+        val temp = writer.commands.single { it[0] == 0x3A.toByte() && it[2] == 0x02.toByte() }
+        assertEquals(0x01.toByte(), temp[3])
+        assertEquals(5.toByte(), temp[4])
+        // SpO2/stress/HRV on — the history sync depends on them.
         for (pref in byteArrayOf(0x2C, 0x36, 0x38)) {
             val write = writer.commands.first { it[0] == pref && it[1] == 0x02.toByte() }
             assertEquals(0x01.toByte(), write[2])
@@ -97,7 +111,7 @@ class ColmiMeasurementSettingsTest {
     }
 
     @Test
-    fun `ring-disabled all-day HR is re-enabled keeping the ring's interval`() {
+    fun `ring pref replies do not override the written defaults`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         engine.setMeasurementSettings(null)
@@ -106,42 +120,27 @@ class ColmiMeasurementSettingsTest {
         engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x02, 60)))
         engine.destroy()
 
-        val autoHr = writer.commands.first { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() }
-        assertEquals(0x01.toByte(), autoHr[2])   // forced on — 0x15 HR history needs it
-        assertEquals(60.toByte(), autoHr[3])     // but the ring's interval is respected
+        val autoHr = writer.commands.filter { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() }
+        assertEquals(1, autoHr.size)
+        assertEquals(5.toByte(), autoHr[0][3])
     }
 
     @Test
-    fun `ring-enabled all-day HR is left untouched`() {
-        val writer = RecordingWriter()
-        val engine = ColmiSyncEngine(writer, ColmiDecoder)
-        engine.setMeasurementSettings(null)
-        engine.runStartup()
-        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30)))
-        engine.destroy()
-
-        assertTrue(writer.commands.none { it[0] == 0x16.toByte() && it[1] == 0x02.toByte() })
-    }
-
-    @Test
-    fun `seeded config surfaces the ring's settings once both prefs reported`() {
+    fun `no persisted config seeds the defaults immediately`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         var seeded: MeasurementSettings? = null
         engine.setMeasurementSettings(null)
         engine.setOnMeasurementConfigSeeded { seeded = it }
         engine.runStartup()
-
-        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x16, 0x01, 0x01, 30)))  // HR on, 30 min
-        assertEquals(null, seeded)  // waits for the temp reply
-        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, 0x00)))  // temp off
         engine.destroy()
 
         val settings = seeded!!
-        assertTrue(settings.hrEnabled)
-        assertEquals(30, settings.hrIntervalMinutes)
-        assertTrue(settings.spo2Enabled && settings.stressEnabled && settings.hrvEnabled)
-        assertTrue(!settings.temperatureEnabled)
+        assertEquals(MeasurementSettings.ALL_ON_DEFAULT, settings)
+        assertEquals(5, settings.hrIntervalMinutes)
+        assertEquals(5, settings.temperatureIntervalMinutes)
+        assertTrue(settings.hrEnabled && settings.spo2Enabled && settings.stressEnabled && settings.hrvEnabled)
+        assertTrue(settings.temperatureEnabled)
     }
 
     @Test
@@ -162,18 +161,124 @@ class ColmiMeasurementSettingsTest {
     }
 
     @Test
-    fun `apply pushes all five measurement commands immediately`() {
+    fun `apply pushes all five measurement commands immediately, then reads temp back`() {
         val writer = RecordingWriter()
         val engine = ColmiSyncEngine(writer, ColmiDecoder)
         engine.applyMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
         engine.destroy()
 
-        assertEquals(5, writer.commands.size)
+        assertEquals(6, writer.commands.size)
         assertEquals(0x16.toByte(), writer.commands[0][0])  // auto-HR
         assertEquals(0x2C.toByte(), writer.commands[1][0])  // SpO2 pref
         assertEquals(0x36.toByte(), writer.commands[2][0])  // stress pref
         assertEquals(0x38.toByte(), writer.commands[3][0])  // HRV pref
-        assertEquals(0x3A.toByte(), writer.commands[4][0])  // temp pref
+        assertEquals(0x3A.toByte(), writer.commands[4][0])  // temp pref write
+        assertArrayEquals(ColmiEncoder.readTempPref(), writer.commands[5])  // temp read-back
+    }
+
+    // MARK: Temperature read-back
+
+    private fun tempWrites(writer: RecordingWriter) =
+        writer.commands.filter { it[0] == 0x3A.toByte() && it[2] == 0x02.toByte() }
+
+    private fun tempReply(enabled: Int, interval: Int) =
+        ColmiPacket.frame(byteArrayOf(0x3A, 0x03, 0x01, enabled.toByte(), interval.toByte(), 5, 10))
+
+    @Test
+    fun `temp read-back that echoes the interval is recorded as applied`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.applyMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.handleRawNotify(tempReply(enabled = 1, interval = 5))
+        engine.destroy()
+
+        val status = ColmiTempPrefReadback.status.value!!
+        assertEquals(ColmiTempPrefReadback.Verdict.APPLIED, status.verdict)
+        assertEquals(5, status.reportedMinutes)
+        assertEquals(1, tempWrites(writer).size)  // no retry
+    }
+
+    @Test
+    fun `startup read before the write is not taken as the read-back`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.setMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.runStartup()
+        // First reply answers the handshake's pre-write read: the ring was still at 30, off.
+        engine.handleRawNotify(tempReply(enabled = 0, interval = 30))
+        assertEquals(1, tempWrites(writer).size)  // the pre-write state triggers no retry
+        // Second reply is the read-back of the 5-minute write.
+        engine.handleRawNotify(tempReply(enabled = 1, interval = 5))
+        engine.destroy()
+
+        assertEquals(ColmiTempPrefReadback.Verdict.APPLIED, ColmiTempPrefReadback.status.value!!.verdict)
+    }
+
+    @Test
+    fun `ring that clamps the interval is accepted without a retry`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.applyMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.handleRawNotify(tempReply(enabled = 1, interval = 30))
+        engine.destroy()
+
+        val status = ColmiTempPrefReadback.status.value!!
+        assertEquals(ColmiTempPrefReadback.Verdict.CLAMPED, status.verdict)
+        assertEquals(30, status.reportedMinutes)
+        assertEquals(5, status.requestedMinutes)
+        assertEquals(1, tempWrites(writer).size)
+    }
+
+    @Test
+    fun `ring that switches temperature off gets one retry at the firmware default`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.applyMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.handleRawNotify(tempReply(enabled = 0, interval = 0))
+        assertEquals(ColmiTempPrefReadback.Verdict.DISABLED_BY_RING, ColmiTempPrefReadback.status.value!!.verdict)
+        val writes = tempWrites(writer)
+        assertEquals(2, writes.size)
+        assertEquals(30.toByte(), writes[1][4])
+        assertArrayEquals(ColmiEncoder.readTempPref(), writer.commands.last())
+
+        // The retry's read-back settles it; a second refusal does not loop.
+        engine.handleRawNotify(tempReply(enabled = 0, interval = 0))
+        engine.destroy()
+        assertTrue(ColmiTempPrefReadback.status.value!!.fellBack)
+        assertEquals(2, tempWrites(writer).size)
+    }
+
+    @Test
+    fun `rejected temp write retries and its stale read-back is ignored`() {
+        val writer = RecordingWriter()
+        val engine = ColmiSyncEngine(writer, ColmiDecoder)
+        engine.applyMeasurementSettings(MeasurementSettings.ALL_ON_DEFAULT)
+        engine.handleRawNotify(ColmiPacket.frame(byteArrayOf(0xBA.toByte(), 0x03)))  // error flag
+        assertEquals(ColmiTempPrefReadback.Verdict.REJECTED, ColmiTempPrefReadback.status.value!!.verdict)
+        assertEquals(30.toByte(), tempWrites(writer)[1][4])
+
+        // The read queued behind the rejected write answers first, with the ring's old state:
+        // it must not settle the retry.
+        engine.handleRawNotify(tempReply(enabled = 0, interval = 0))
+        assertEquals(ColmiTempPrefReadback.Verdict.REJECTED, ColmiTempPrefReadback.status.value!!.verdict)
+        // The retry's own read-back does.
+        engine.handleRawNotify(tempReply(enabled = 1, interval = 30))
+        engine.destroy()
+        val status = ColmiTempPrefReadback.status.value!!
+        assertEquals(ColmiTempPrefReadback.Verdict.APPLIED, status.verdict)
+        assertTrue(status.fellBack)
+        assertEquals(2, tempWrites(writer).size)
+    }
+
+    @Test
+    fun `read-back without an interval byte is not reported, not a failure`() {
+        val request = ColmiTempPrefReadback.Request(enabled = true, intervalMinutes = 5, fallback = false)
+        val verdict = ColmiTempPrefReadback.evaluate(request, ColmiTempPrefReadout(enabled = true, intervalMinutes = null))
+        assertEquals(ColmiTempPrefReadback.Verdict.NOT_REPORTED, verdict)
+        assertTrue(!ColmiTempPrefReadback.needsFallback(request, verdict))
+        // Already at the firmware default: nothing to retry with.
+        val atDefault = request.copy(intervalMinutes = 30)
+        assertTrue(!ColmiTempPrefReadback.needsFallback(atDefault, ColmiTempPrefReadback.Verdict.REJECTED))
     }
 
     @Test

@@ -44,7 +44,7 @@ import com.pulseloop.data.entity.*
         CachedFoodProductEntity::class,
         MeasurementDeletionEntity::class,
     ],
-    version = 28,
+    version = 29,
     exportSchema = false,
 )
 abstract class PulseLoopDatabase : RoomDatabase() {
@@ -523,6 +523,16 @@ abstract class PulseLoopDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v28 -> v29: `device_measurement_configs.temperatureIntervalMinutes`. The Colmi
+         * temperature write used to hardcode 30 minutes; it is a setting now, defaulting to 5.
+         */
+        private val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `device_measurement_configs` ADD COLUMN `temperatureIntervalMinutes` INTEGER NOT NULL DEFAULT 5")
+            }
+        }
+
         private fun adoptStableMeasurementIdentities(db: SupportSQLiteDatabase) {
             db.execSQL("DROP INDEX IF EXISTS `index_measurements_kindRaw_timestamp_sourceRaw`")
             db.execSQL(
@@ -617,6 +627,7 @@ abstract class PulseLoopDatabase : RoomDatabase() {
                         MIGRATION_25_26,
                         MIGRATION_26_27,
                         MIGRATION_27_28,
+                        MIGRATION_28_29,
                     )
                     // Downgrades only (sideloading an older APK). A blanket destructive
                     // fallback would silently wipe every measurement, sleep session, and

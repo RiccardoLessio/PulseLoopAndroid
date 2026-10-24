@@ -103,6 +103,7 @@ object DataArchiveService {
                     hrEnabled = c.bool("hrEnabled"), spo2Enabled = c.bool("spo2Enabled"),
                     stressEnabled = c.bool("stressEnabled"), hrvEnabled = c.bool("hrvEnabled"),
                     temperatureEnabled = c.bool("temperatureEnabled"), updatedAt = c.long("updatedAt"),
+                    temperatureIntervalMinutes = c.int_("temperatureIntervalMinutes"),
                 )
             },
             activitySessions = collect("activity_sessions") { c ->
@@ -419,6 +420,7 @@ object DataArchiveService {
                     hrEnabled = dmc.hrEnabled, spo2Enabled = dmc.spo2Enabled,
                     stressEnabled = dmc.stressEnabled, hrvEnabled = dmc.hrvEnabled,
                     temperatureEnabled = dmc.temperatureEnabled, updatedAt = dmc.updatedAt,
+                    temperatureIntervalMinutes = dmc.temperatureIntervalMinutes,
                 ))
             }
             for (as_ in archive.activitySessions) {

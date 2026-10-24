@@ -8,6 +8,9 @@ import java.time.temporal.ChronoUnit
 /** Ring-reported all-day HR config from a `0x16` auto-HR pref read reply. */
 data class ColmiAutoHRReadout(val enabled: Boolean, val intervalMinutes: Int)
 
+/** Ring-reported temperature config from a `0x3A 0x03` read reply; null interval = not reported. */
+data class ColmiTempPrefReadout(val enabled: Boolean, val intervalMinutes: Int?)
+
 /** Capability bits from the 0x3C device-support reply (see [ColmiDecoder.decodeDeviceSupport]). */
 data class ColmiDeviceSupport(val supportsBlePair: Boolean, val supportsIntervalTemp: Boolean)
 
@@ -298,6 +301,19 @@ object ColmiDecoder {
         if (v[0] != ColmiCommandID.AUTO_TEMP_PREF || v[1].toInt() != 0x03 ||
             v[2] != ColmiCommandID.PREF_READ) return null
         return v[3].toInt() == 0x01
+    }
+
+    /**
+     * The same read reply as [decodeTempPrefRead], plus the interval byte. The reply is assumed to
+     * mirror the write record ([ColmiEncoder.writeTempPref]: `enabled, interval, start, ...`), so
+     * the interval is full-frame byte `[4]`. That layout is inferred, not confirmed against the
+     * vendor parser, so `0` (a firmware that doesn't echo it) decodes as `intervalMinutes = null`
+     * — "not reported" — rather than as a rejected value.
+     */
+    fun decodeTempPrefReadout(data: ByteArray): ColmiTempPrefReadout? {
+        val enabled = decodeTempPrefRead(data) ?: return null
+        val interval = (ColmiPacket.validating(data) ?: return null).bytes[4].toUByte().toInt()
+        return ColmiTempPrefReadout(enabled = enabled, intervalMinutes = interval.takeIf { it > 0 })
     }
 
     /**

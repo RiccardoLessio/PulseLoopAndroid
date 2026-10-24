@@ -1179,6 +1179,7 @@ internal suspend fun loadPersistedMeasurementSettings(db: PulseLoopDatabase): Me
         stressEnabled = config.stressEnabled,
         hrvEnabled = config.hrvEnabled,
         temperatureEnabled = config.temperatureEnabled,
+        temperatureIntervalMinutes = config.temperatureIntervalMinutes,
     )
 }
 
@@ -1204,6 +1205,7 @@ internal suspend fun persistSeededMeasurementConfig(
                 stressEnabled = settings.stressEnabled,
                 hrvEnabled = settings.hrvEnabled,
                 temperatureEnabled = settings.temperatureEnabled,
+                temperatureIntervalMinutes = settings.temperatureIntervalMinutes,
             )
         )
     } catch (_: Exception) {}

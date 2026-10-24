@@ -1,5 +1,6 @@
 package com.pulseloop.ring
 
+import android.util.Log
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -23,22 +24,25 @@ class ColmiSyncEngine(
     private val zone = ZoneId.systemDefault()
 
     /** User-chosen all-day measurement config, applied in the connect handshake and updatable
-     *  live. `null` ⇒ the user has never saved one: the ring's own settings (possibly
-     *  configured in the official app) are the source of truth, so the handshake reads them
-     *  and seeds the app config from the replies instead of force-writing defaults. */
+     *  live. `null` ⇒ the user has never saved one: the handshake writes
+     *  [MeasurementSettings.ALL_ON_DEFAULT] (HR every 5 min, temperature every 5 min, SpO2 /
+     *  stress / HRV on) and seeds the app config with it. */
     private var measurementSettings: MeasurementSettings? = null
 
-    /** Sink for the config seeded from the ring's pref-read replies (no persisted config). */
+    /** Sink for the default config written on a connect with no persisted config. */
     private var onConfigSeeded: ((MeasurementSettings) -> Unit)? = null
 
     /** Invoked when the ring's device-support reply advertises `supportBlePair`; the BLE client
      *  creates the OS bond in response (mirrors the official QRing app). */
     private var onBondRequested: (() -> Unit)? = null
 
-    // Read-reply seeding state: collected until both the auto-HR and temp prefs reported.
-    private var seedingFromRing = false
-    private var seededHrIntervalMinutes: Int? = null
-    private var seededTempEnabled: Boolean? = null
+    /** The last temperature write, until its read-back arrives (see [ColmiTempPrefReadback]). */
+    @Volatile private var tempRequest: ColmiTempPrefReadback.Request? = null
+
+    /** One entry per outstanding `0x3A` read, in send order: true when it verifies a write. The
+     *  connect handshake also reads the pref *before* writing it, and that reply must not be
+     *  mistaken for the write's read-back. */
+    private val tempReads = ArrayDeque<Boolean>()
 
     /** The user's profile for the ring's user-preferences command. `null` ⇒ send the encoder's
      *  neutral defaults (matches prior behaviour) until the coordinator pushes real values. */
@@ -152,6 +156,8 @@ class ColmiSyncEngine(
          *  than the ring's ~10 s cadence by a margin for the optical warm-up (~25 s on the R09's
          *  SpO2 twin) and one missed push. */
         internal const val SPORT_TELEMETRY_IDLE_MS = 45_000L
+
+        private const val TAG = "ColmiSyncEngine"
     }
 
     override fun runStartup() {
@@ -166,7 +172,7 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_STRESS_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_SPO2_PREF))
         writer?.enqueue(encoder.readPref(ColmiCommandID.AUTO_HRV_PREF))
-        writer?.enqueue(encoder.readTempPref())
+        enqueueTempRead(verifiesWrite = false)
         writer?.enqueue(encoder.readGoals())
         val settings = measurementSettings
         if (settings != null) {
@@ -174,17 +180,14 @@ class ColmiSyncEngine(
             // the ring accumulates the data the history sync returns.
             enqueueMeasurementCommands(settings)
         } else {
-            // Nothing persisted (fresh install / first connect): don't clobber ring-side
-            // settings the user may have configured elsewhere. The AUTO_HR_PREF / temp-pref
-            // reads above seed the app config from the ring's replies (handleRawNotify).
-            // SpO2/stress/HRV are still force-enabled — the history sync depends on them
-            // and they have always been enabled on connect.
-            seedingFromRing = true
-            seededHrIntervalMinutes = null
-            seededTempEnabled = null
-            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = true))
-            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = true))
-            writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = true))
+            // Nothing persisted (fresh install / first connect): write this fork's defaults —
+            // HR and temperature every 5 minutes, SpO2/stress/HRV on — and seed the app config
+            // with them, so the Measurement screen shows what the ring was told. The pref reads
+            // above still go out, so the ring's previous settings appear in the log.
+            val defaults = MeasurementSettings.ALL_ON_DEFAULT
+            measurementSettings = defaults
+            enqueueMeasurementCommands(defaults)
+            onConfigSeeded?.invoke(defaults)
         }
         startHistorySync()
     }
@@ -224,10 +227,8 @@ class ColmiSyncEngine(
     }
 
     /**
-     * Consume the connect handshake's pref-read replies while seeding (no persisted config).
-     * One exception to "the ring's settings win": all-day HR must be ON or the `0x15` HR
-     * history sync returns nothing — so a disabled reply gets a re-enable write, keeping
-     * the ring's reported interval.
+     * Raw-frame bookkeeping the decoder's events don't carry: realtime-HR rejection, sport
+     * session state, device-support bits, and the temperature pref's read-back.
      */
     override fun handleRawNotify(data: ByteArray) {
         // Realtime-HR rejection / fallback bookkeeping runs ahead of the seeding guard: both are
@@ -274,33 +275,78 @@ class ColmiSyncEngine(
             if (support.supportsBlePair) onBondRequested?.invoke()
             return
         }
-        if (!seedingFromRing) return
-        decoder.decodeAutoHRPrefRead(data)?.let { readout ->
-            val interval = if (readout.intervalMinutes in 5..60) readout.intervalMinutes else 5
-            if (!readout.enabled) {
-                writer?.enqueue(encoder.autoHeartRate(enabled = true, intervalMinutes = interval))
-            }
-            seededHrIntervalMinutes = interval
-            finishSeedingIfComplete()
+        if (frame?.get(0)?.toUByte() == (ColmiCommandID.AUTO_TEMP_PREF or 0x80u)) {
+            onTempPrefRejected()
+            return
         }
-        decoder.decodeTempPrefRead(data)?.let { enabled ->
-            seededTempEnabled = enabled
-            finishSeedingIfComplete()
-        }
+        decoder.decodeTempPrefReadout(data)?.let { onTempPrefReadout(it) }
     }
 
-    /** Once both prefs reported, adopt the seeded config and surface it for persistence. */
-    private fun finishSeedingIfComplete() {
-        val interval = seededHrIntervalMinutes ?: return
-        val tempEnabled = seededTempEnabled ?: return
-        seedingFromRing = false
-        val settings = MeasurementSettings(
-            hrEnabled = true, hrIntervalMinutes = interval,   // HR forced on (see handleRawNotify)
-            spo2Enabled = true, stressEnabled = true, hrvEnabled = true,  // force-enabled at startup
-            temperatureEnabled = tempEnabled,
+    private fun enqueueTempRead(verifiesWrite: Boolean) {
+        synchronized(tempReads) { tempReads.addLast(verifiesWrite) }
+        writer?.enqueue(encoder.readTempPref())
+    }
+
+    private fun writeTempPref(request: ColmiTempPrefReadback.Request) {
+        tempRequest = request
+        writer?.enqueue(encoder.writeTempPref(enabled = request.enabled, intervalMinutes = request.intervalMinutes))
+        enqueueTempRead(verifiesWrite = true)
+    }
+
+    /**
+     * The read-back after a temperature write: record what the ring applied and, if it switched
+     * temperature off, retry once at the firmware's own 30 minutes so all-day temperature keeps
+     * recording. A different interval than asked is accepted as the ring's clamp, not retried.
+     */
+    private fun onTempPrefReadout(readout: ColmiTempPrefReadout) {
+        val verifies = synchronized(tempReads) { tempReads.removeFirstOrNull() } ?: false
+        val request = tempRequest
+        if (!verifies || request == null) {
+            Log.i(TAG, "temp pref on ring: enabled=${readout.enabled} interval=${readout.intervalMinutes ?: "n/a"} min")
+            return
+        }
+        settleTempRequest(request, readout, ColmiTempPrefReadback.evaluate(request, readout))
+    }
+
+    /**
+     * The ring answered the `0x3A` write with its error flag. The read queued behind that write
+     * still gets a reply; it is demoted to a plain read so it can't be taken as the read-back of
+     * the fallback write sent from here.
+     */
+    private fun onTempPrefRejected() {
+        val request = tempRequest ?: return
+        synchronized(tempReads) {
+            val pending = tempReads.indexOfFirst { it }
+            if (pending >= 0) tempReads[pending] = false
+        }
+        settleTempRequest(request, null, ColmiTempPrefReadback.Verdict.REJECTED)
+    }
+
+    private fun settleTempRequest(
+        request: ColmiTempPrefReadback.Request,
+        readout: ColmiTempPrefReadout?,
+        verdict: ColmiTempPrefReadback.Verdict,
+    ) {
+        tempRequest = null
+        Log.i(
+            TAG,
+            "temp pref write enabled=${request.enabled} interval=${request.intervalMinutes} min -> $verdict " +
+                "(ring: enabled=${readout?.enabled} interval=${readout?.intervalMinutes ?: "n/a"} min)",
         )
-        measurementSettings = settings
-        onConfigSeeded?.invoke(settings)
+        ColmiTempPrefReadback.publish(
+            ColmiTempPrefReadback.Status(
+                requestedEnabled = request.enabled,
+                requestedMinutes = ColmiTempPrefReadback.wireMinutes(request.intervalMinutes),
+                reportedEnabled = readout?.enabled,
+                reportedMinutes = readout?.intervalMinutes,
+                verdict = verdict,
+                fellBack = request.fallback,
+                at = System.currentTimeMillis(),
+            )
+        )
+        if (ColmiTempPrefReadback.needsFallback(request, verdict)) {
+            writeTempPref(request.copy(intervalMinutes = ColmiEncoder.FIRMWARE_TEMP_INTERVAL_MINUTES, fallback = true))
+        }
     }
 
     override fun applyMeasurementSettings(settings: MeasurementSettings) {
@@ -324,7 +370,7 @@ class ColmiSyncEngine(
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_SPO2_PREF, enabled = s.spo2Enabled))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_STRESS_PREF, enabled = s.stressEnabled))
         writer?.enqueue(encoder.writePref(ColmiCommandID.AUTO_HRV_PREF, enabled = s.hrvEnabled))
-        writer?.enqueue(encoder.writeTempPref(enabled = s.temperatureEnabled))
+        writeTempPref(ColmiTempPrefReadback.Request(s.temperatureEnabled, s.temperatureIntervalMinutes, fallback = false))
     }
 
     /** Build the user-preferences command from the stored profile, falling back to the encoder's

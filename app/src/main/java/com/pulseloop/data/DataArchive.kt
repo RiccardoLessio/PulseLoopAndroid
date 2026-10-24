@@ -90,7 +90,7 @@ data class PulseArchive(
     val deviceId: String, val hrIntervalMinutes: Int = 5, val hrEnabled: Boolean = true,
     val spo2Enabled: Boolean = true, val stressEnabled: Boolean = true,
     val hrvEnabled: Boolean = true, val temperatureEnabled: Boolean = true,
-    val updatedAt: Long,
+    val updatedAt: Long, val temperatureIntervalMinutes: Int = 5,
 )
 
 @Serializable data class ActivitySessionDTO(

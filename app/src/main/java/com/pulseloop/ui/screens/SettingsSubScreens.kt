@@ -61,7 +61,9 @@ import com.pulseloop.health.HealthConnectRemovalWorker
 import com.pulseloop.health.HealthConnectWatermarks
 import com.pulseloop.health.HealthConnectSdk
 import com.pulseloop.notifications.CoachNotifications
+import com.pulseloop.ring.ColmiTempPrefReadback
 import com.pulseloop.ring.MeasurementKind
+import com.pulseloop.ring.MeasurementSettings
 import com.pulseloop.ring.RingBLEClient
 import com.pulseloop.ring.RingConnectionState
 import com.pulseloop.ring.RingDeviceType
@@ -1509,6 +1511,9 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     val spo2IntervalSteps = ((60 - (minimumInterval - 5)) / 5 - 1).coerceAtLeast(0)
     val supportsStressSetting = WearableCapability.STRESS in capabilities &&
         device?.deviceType != RingDeviceType.YCBT
+    // Only the Colmi temperature record carries an interval byte (ColmiEncoder.writeTempPref).
+    val supportsTempInterval = device?.deviceType == RingDeviceType.COLMI_R02
+    val tempReadback by ColmiTempPrefReadback.status.collectAsState()
 
     var cfgHrEnabled by remember { mutableStateOf(true) }
     var cfgHrInterval by remember { mutableStateOf(5) }
@@ -1518,6 +1523,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
     var cfgStress by remember { mutableStateOf(true) }
     var cfgHrv by remember { mutableStateOf(true) }
     var cfgTemp by remember { mutableStateOf(true) }
+    var cfgTempInterval by remember { mutableStateOf(MeasurementSettings.DEFAULT_TEMPERATURE_INTERVAL_MINUTES) }
     var cfgLoaded by remember { mutableStateOf(false) }
     var cfgSavedMsg by remember { mutableStateOf<String?>(null) }
 
@@ -1534,6 +1540,8 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
         cfgStress = (config?.stressEnabled ?: true) && supportsStressSetting
         cfgHrv = (config?.hrvEnabled ?: true) && WearableCapability.HRV in capabilities
         cfgTemp = (config?.temperatureEnabled ?: true) && WearableCapability.TEMPERATURE in capabilities
+        cfgTempInterval = (config?.temperatureIntervalMinutes ?: MeasurementSettings.DEFAULT_TEMPERATURE_INTERVAL_MINUTES)
+            .coerceIn(5, 60)
         cfgLoaded = true
     }
 
@@ -1615,6 +1623,28 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                     }
                     if (WearableCapability.TEMPERATURE in capabilities) {
                         VitalToggle("Temperature", cfgTemp) { cfgTemp = it }
+                        if (cfgTemp && supportsTempInterval) {
+                            Text(
+                                "Every $cfgTempInterval min",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Slider(
+                                enabled = cfgLoaded,
+                                value = cfgTempInterval.toFloat(),
+                                onValueChange = { cfgTempInterval = ((it / 5).toInt() * 5).coerceIn(5, 60); cfgSavedMsg = null },
+                                valueRange = 5f..60f,
+                                steps = 10,
+                            )
+                            tempReadback?.let { status ->
+                                Text(
+                                    tempReadbackLabel(status),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (status.verdict == ColmiTempPrefReadback.Verdict.APPLIED)
+                                        MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(12.dp))
@@ -1634,6 +1664,7 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                                         hrvEnabled = cfgHrv && WearableCapability.HRV in capabilities,
                                         temperatureEnabled = cfgTemp && WearableCapability.TEMPERATURE in capabilities,
                                         updatedAt = System.currentTimeMillis(),
+                                        temperatureIntervalMinutes = cfgTempInterval.coerceIn(5, 60),
                                     )
                                 )
                                 coordinator?.applyMeasurementSettings()
@@ -1650,6 +1681,25 @@ fun MeasurementSettingsScreen(coordinator: RingSyncCoordinator?, onBack: () -> U
                 }
             }
         }
+    }
+}
+
+/** What the ring reported after the last temperature write (see [ColmiTempPrefReadback]). */
+private fun tempReadbackLabel(s: ColmiTempPrefReadback.Status): String {
+    val asked = "asked ${s.requestedMinutes} min"
+    val retry = if (s.fellBack) " (retried at the firmware default)" else ""
+    return when (s.verdict) {
+        ColmiTempPrefReadback.Verdict.APPLIED ->
+            if (s.requestedEnabled) "Ring confirmed: every ${s.reportedMinutes ?: s.requestedMinutes} min$retry"
+            else "Ring confirmed: temperature off"
+        ColmiTempPrefReadback.Verdict.CLAMPED ->
+            "Ring applied ${s.reportedMinutes?.let { "$it min" } ?: "a different setting"} ($asked)$retry"
+        ColmiTempPrefReadback.Verdict.NOT_REPORTED ->
+            "Ring accepted the setting but doesn't report its interval ($asked)$retry"
+        ColmiTempPrefReadback.Verdict.DISABLED_BY_RING ->
+            "Ring switched temperature off ($asked)$retry"
+        ColmiTempPrefReadback.Verdict.REJECTED ->
+            "Ring rejected the temperature setting ($asked)$retry"
     }
 }
 
