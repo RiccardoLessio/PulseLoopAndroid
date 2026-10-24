@@ -106,7 +106,11 @@ object DiaryLogic {
     fun tapSupplement(entry: DiaryEntryEntity, name: String, now: Long): DiaryEntryEntity =
         setSupplement(entry, name, nextTap(supplementValue(entry, name)), now)
 
-    /** Anything recorded today (the Today card's "Compilato"). */
+    /**
+     * Anything the USER entered today (the Today card's "Compilato", its move to the bottom of
+     * Today). Auto-derived fields (sport from activity recognition/workouts, screens in bed from
+     * UsageStats) and the mere existence of a row never count.
+     */
     fun anyAnswered(e: DiaryEntryEntity?): Boolean =
         eveningAnswered(e) || e?.morningMood != null || e?.morningFeeling != null || e?.supplements != null
 
@@ -130,9 +134,12 @@ object DiaryLogic {
 
     fun clampScale(v: Int?, range: IntRange): Int? = v?.takeIf { it in range }
 
-    /** True once the evening part has at least one answer (so tonight's reminder is not needed). */
+    /**
+     * True once the evening part has at least one manual answer (so tonight's reminder is not
+     * needed). `sport` and `screensInBed` are auto-derived suggestions, not answers.
+     */
     fun eveningAnswered(e: DiaryEntryEntity?): Boolean = e != null && listOf(
-        e.caffeine, e.lateCaffeine, e.alcohol, e.lateMeal, e.sport, e.screensInBed, e.mood, e.perceivedStress, e.illness,
+        e.caffeine, e.lateCaffeine, e.alcohol, e.lateMeal, e.mood, e.perceivedStress, e.illness,
     ).any { it != null }
 
     fun morningAnswered(e: DiaryEntryEntity?): Boolean = e?.morningMood != null && e.morningFeeling != null

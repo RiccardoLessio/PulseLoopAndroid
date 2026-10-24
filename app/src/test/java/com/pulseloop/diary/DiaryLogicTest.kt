@@ -101,4 +101,23 @@ class DiaryLogicTest {
         assertEquals(3, DiaryLogic.clampScale(3, 1..5))
         assertNull(DiaryLogic.clampScale(6, 1..5))
     }
+
+    @Test
+    fun `auto-derived fields alone are not compiled and do not skip the reminder`() {
+        val e = DiaryLogic.empty(day, 1L).copy(sport = true, sportStart = "18:00", sportDurationMin = 45, screensInBed = true)
+        assertFalse(DiaryLogic.anyAnswered(e))
+        assertFalse(DiaryLogic.eveningAnswered(e))
+        assertFalse(DiaryLogic.anyAnswered(DiaryLogic.empty(day, 1L)))
+        assertFalse(DiaryLogic.anyAnswered(null))
+    }
+
+    @Test
+    fun `any manual field makes the day compiled`() {
+        val base = DiaryLogic.empty(day, 1L).copy(sport = true, screensInBed = true)
+        listOf(
+            base.copy(lateCaffeine = false), base.copy(alcohol = true), base.copy(lateMeal = false),
+            base.copy(supplements = emptyList()), base.copy(mood = 3), base.copy(morningMood = 4),
+            base.copy(morningFeeling = 2), base.copy(caffeine = true), base.copy(perceivedStress = 2), base.copy(illness = false),
+        ).forEach { assertTrue(DiaryLogic.anyAnswered(it)) }
+    }
 }
