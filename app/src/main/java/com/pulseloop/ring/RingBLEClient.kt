@@ -207,6 +207,10 @@ class RingBLEClient(
     private var connectingStartedAt: Long = 0L
     private var watchdogJob: Job? = null
     private var ownershipRetryJob: Job? = null
+    /** Set by [destroy]: a destroyed client never (re)claims, and never blocks, the GATT slot. */
+    @Volatile private var destroyed = false
+    /** When this client took PulseLoop's process-wide GATT slot; 0 while it doesn't hold it. */
+    @Volatile private var ownershipClaimedAt: Long = 0L
     @Volatile private var watchdogReconnectPaused = false
     @Volatile private var teardownWaitJob: Job? = null
     private var teardownWaitAddress: String? = null
@@ -2159,22 +2163,30 @@ class RingBLEClient(
 
     /** Tear down this client. Returns true only if it owned PulseLoop's process-wide GATT slot. */
     fun destroy(): Boolean {
+        destroyed = true
         watchdogReconnectPaused = true
-        crpReconnect.cancel()
-        cancelTeardownConnect()
-        watchdogJob?.cancel()
-        ownershipRetryJob?.cancel(); ownershipRetryJob = null
-        stopKeepalive()
-        scanner?.stopScan(scanCallback)
-        activeDriver?.connectionDidEnd()
-        // The client scope is about to die. CRP close lives in the shared process monitor so
-        // a foreground client can wait for it; other families still close synchronously here.
-        bluetoothGatt?.let { gatt ->
-            if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
-            else {
-                try { gatt.disconnect() } catch (_: Exception) {}
-                closeGattQuietly(gatt)
+        // A throw anywhere in the teardown (stopScan with the adapter off, a driver hook) used to
+        // skip the release below, leaving the foreground client logging "another PulseLoop BLE
+        // client owns GATT" every second until the process died (2026-10-24, ~10 h of no data).
+        try {
+            crpReconnect.cancel()
+            cancelTeardownConnect()
+            watchdogJob?.cancel()
+            ownershipRetryJob?.cancel(); ownershipRetryJob = null
+            stopKeepalive()
+            scanner?.stopScan(scanCallback)
+            activeDriver?.connectionDidEnd()
+            // The client scope is about to die. CRP close lives in the shared process monitor so
+            // a foreground client can wait for it; other families still close synchronously here.
+            bluetoothGatt?.let { gatt ->
+                if (activeCoordinator?.deviceType == RingDeviceType.CRP) disconnectCrpGatt(gatt)
+                else {
+                    try { gatt.disconnect() } catch (_: Exception) {}
+                    closeGattQuietly(gatt)
+                }
             }
+        } catch (e: Exception) {
+            Log.w("RingBLEClient", "destroy teardown failed: ${e.message}")
         }
         bluetoothGatt = null
         val releasedConnection = releaseConnectionOwnership()
@@ -2184,12 +2196,32 @@ class RingBLEClient(
     }
 
     private fun claimConnectionOwnership(): Boolean {
+        if (destroyed) return false
         val owner = processConnectionOwner.get()
-        return owner === this || (owner == null && processConnectionOwner.compareAndSet(null, this))
+        if (owner === this) return true
+        // A background client holds the slot for well under a minute (worker 45 s, coach 15 s).
+        // One that is destroyed or has held it far longer leaked it: tear it down and take over,
+        // instead of skipping every connect until the process dies.
+        if (owner != null && !transientOwner && owner.isLeakedOwner()) {
+            Log.w("RingBLEClient", "Reclaiming GATT from a leaked background client")
+            owner.destroy()
+            processConnectionOwner.compareAndSet(owner, null)
+        }
+        return processConnectionOwner.compareAndSet(null, this).also { claimed ->
+            if (claimed) ownershipClaimedAt = System.currentTimeMillis()
+        }
+    }
+
+    private fun isLeakedOwner(): Boolean {
+        val claimedAt = ownershipClaimedAt
+        return destroyed || (transientOwner && claimedAt > 0 &&
+            System.currentTimeMillis() - claimedAt > TRANSIENT_OWNER_MAX_MS)
     }
 
     private fun releaseConnectionOwnership(): Boolean =
-        processConnectionOwner.compareAndSet(this, null)
+        processConnectionOwner.compareAndSet(this, null).also { released ->
+            if (released) ownershipClaimedAt = 0L
+        }
 
     companion object {
         private const val LAST_PERIPHERAL_KEY = "ring.lastPeripheralIdentifier"
@@ -2203,6 +2235,8 @@ class RingBLEClient(
             java.util.concurrent.atomic.AtomicReference<RingBLEClient?>(null)
         /** Foreground retry delay while a short-lived background client yields ownership. */
         private const val PROCESS_OWNER_RETRY_MS = 1_000L
+        /** A background client still holding the GATT slot after this long has leaked it. */
+        private const val TRANSIENT_OWNER_MAX_MS = 3 * 60_000L
         /** How often the liveness watchdog runs. */
         private const val WATCHDOG_INTERVAL_MS = 15_000L
         /** No GATT activity for this long while CONNECTED ⇒ zombie link ⇒ reconnect.
