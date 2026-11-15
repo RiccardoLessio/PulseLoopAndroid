@@ -109,7 +109,26 @@ class RingBLEClient(
     private val bluetoothManager: BluetoothManager =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bluetoothAdapter: BluetoothAdapter = bluetoothManager.adapter
-    private val scanner: BluetoothLeScanner? = bluetoothAdapter.bluetoothLeScanner
+    // Read on each use: the adapter hands out no scanner while Bluetooth is off, so a value
+    // captured at construction stayed null for the client's life if BT was off at that moment.
+    private val scanner: BluetoothLeScanner?
+        get() = try { bluetoothAdapter.bluetoothLeScanner } catch (_: Exception) { null }
+
+    /**
+     * Stops [callback]'s scan without throwing. `BluetoothLeScanner.stopScan` throws
+     * `IllegalStateException("BT Adapter is not turned ON")` when Bluetooth is off, and teardown
+     * paths (`disconnect()` from the UI's background timer) used to crash the app on it.
+     */
+    private fun stopScanQuietly(callback: ScanCallback = scanCallback) {
+        if (!isBluetoothEnabled) return
+        try {
+            scanner?.stopScan(callback)
+        } catch (e: IllegalStateException) {
+            Log.w("RingBLEClient", "stopScan skipped: ${e.message}")
+        } catch (e: SecurityException) {
+            Log.w("RingBLEClient", "stopScan skipped: ${e.message}")
+        }
+    }
 
     // @Volatile: written on the binder thread (onConnectionStateChange) and on Main (connect
     // teardown), and read from both — including the connect-handshake identity guards
@@ -311,13 +330,18 @@ class RingBLEClient(
         val scanSettings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
-        scanner?.startScan(null, scanSettings, scanCallback)
+        try {
+            scanner?.startScan(null, scanSettings, scanCallback)
+        } catch (e: IllegalStateException) {
+            // Bluetooth switched off between the isEnabled check and here.
+            updateState { copy(lastError = "Bluetooth is not powered on") }
+        }
     }
 
     fun stopScanning() {
         finishCrpRecovery()
         reconnectScanPending = false
-        scanner?.stopScan(scanCallback)
+        stopScanQuietly()
         if (_state.value.connectionState in setOf(
                 RingConnectionState.SCANNING, RingConnectionState.RECONNECTING)) {
             updateState { copy(connectionState = RingConnectionState.IDLE) }
@@ -409,7 +433,7 @@ class RingBLEClient(
         // A still-pending reconnect scan means the last attempt never sighted the ring.
         if (reconnectScanPending) {
             reconnectScanPending = false
-            scanner?.stopScan(scanCallback)
+            stopScanQuietly()
             sightlessScans++
             if (sightlessScans >= SIGHTLESS_SCANS_FOR_HINT) {
                 // The classic wedge: the ring still thinks it's connected (stale ACL in
@@ -630,7 +654,7 @@ class RingBLEClient(
         val shouldPublishDisconnect =
             _state.value.connectionState != RingConnectionState.DISCONNECTED
         stopKeepalive()
-        scanner?.stopScan(scanCallback)
+        stopScanQuietly()
         val gatt = bluetoothGatt
         bluetoothGatt = null
         activeDriver?.connectionDidEnd()
@@ -849,7 +873,7 @@ class RingBLEClient(
         }
         try {
             stopKeepalive()
-            scanner?.stopScan(scanCallback)
+            stopScanQuietly()
             activeDriver?.connectionDidEnd()
             bluetoothGatt?.let { gatt ->
                 try { gatt::class.java.getMethod("refresh").invoke(gatt) } catch (_: Exception) {}
@@ -991,7 +1015,7 @@ class RingBLEClient(
         }
         crpReconnect.cancelPending()
         ownershipRetryJob = null
-        scanner?.stopScan(scanCallback)
+        stopScanQuietly()
         // Close any stale GATT from a previous (now-dead) connection before opening a new
         // one. Reconnect attempts after an idle drop would otherwise leak GATT clients and
         // can collide with the orphaned handle. A fresh GATT mirrors the proven
@@ -1520,7 +1544,7 @@ class RingBLEClient(
                 teardownScanConnect = null
                 reconnectScanPending = false
                 sightlessScans = 0
-                scanner?.stopScan(this)
+                stopScanQuietly(this)
                 connectingName = name
                 if (carried != null) {
                     // Resume exactly the attempt that hit the gate; a pairing must not pick up
@@ -2149,7 +2173,7 @@ class RingBLEClient(
         val pairingWait = teardownUserInitiated && bluetoothGatt == null
         crpReconnect.cancel()
         cancelTeardownConnect()
-        if (reconnectScanPending) scanner?.stopScan(scanCallback)
+        if (reconnectScanPending) stopScanQuietly()
         reconnectScanPending = false
         val shown = _state.value.connectionState
         if (shown == RingConnectionState.RECONNECTING ||
@@ -2174,7 +2198,7 @@ class RingBLEClient(
             watchdogJob?.cancel()
             ownershipRetryJob?.cancel(); ownershipRetryJob = null
             stopKeepalive()
-            scanner?.stopScan(scanCallback)
+            stopScanQuietly()
             activeDriver?.connectionDidEnd()
             // The client scope is about to die. CRP close lives in the shared process monitor so
             // a foreground client can wait for it; other families still close synchronously here.
