@@ -50,6 +50,8 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Background ring sync run in-process from its alarm (RingSyncAlarm). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -147,6 +149,8 @@
         <receiver android:name=".context.ActivityTransitionReceiver" android:exported="false" />
         <receiver android:name=".labels.LabelActionReceiver" android:exported="false" />
         <receiver android:name=".diary.DiaryAlarmReceiver" android:exported="false" />
+        <!-- Background ring sync clock (exact while-idle alarm, re-armed on each fire). -->
+        <receiver android:name=".service.RingSyncAlarmReceiver" android:exported="false" />
         <receiver android:name=".diary.DiaryActionReceiver" android:exported="false" />
         <receiver android:name=".diary.ContextBootReceiver" android:exported="true">
             <intent-filter>

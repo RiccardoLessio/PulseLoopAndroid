@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.*
+import androidx.work.ListenableWorker.Result
 import com.pulseloop.data.PulseLoopDatabase
 import com.pulseloop.health.HealthConnectExportWorker
 import com.pulseloop.remote.RingHubSyncWorker
@@ -30,11 +31,17 @@ class RingSyncWorker(
 
     companion object {
         private const val WORK_NAME = "ring_background_sync"
-        private const val SYNC_TIMEOUT_SECONDS = 45L
         private const val TAG = "RingSyncWorker"
+        const val KEY_TRIGGER = "trigger"
+        const val TRIGGER_ALARM = "alarm"
+        const val TRIGGER_PERIODIC = "periodic"
 
-        /** Schedule periodic background ring sync. Call from MainActivity. */
+        /**
+         * Schedule background ring sync: the exact-alarm clock ([RingSyncAlarm], primary on MagicOS)
+         * plus this periodic work as the fallback. Call from app start and after boot/update.
+         */
         fun schedule(context: Context) {
+            RingSyncAlarm.schedule(context)
             val request = PeriodicWorkRequestBuilder<RingSyncWorker>(
                 30, TimeUnit.MINUTES,  // repeat interval
                 15, TimeUnit.MINUTES,  // flex interval
@@ -59,35 +66,71 @@ class RingSyncWorker(
         }
 
         fun cancel(context: Context) {
+            RingSyncAlarm.cancel(context)
             WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
         }
     }
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result =
+        RingBackgroundSync.run(applicationContext, inputData.getString(KEY_TRIGGER) ?: TRIGGER_PERIODIC)
+}
+
+/**
+ * One background ring pass, shared by [RingSyncWorker] (periodic or expedited) and
+ * [RingSyncAlarm] when it runs the pass in-process. A process-wide flag keeps two triggers from
+ * opening two transient clients at once; the GATT-ownership guards below apply to every caller.
+ */
+object RingBackgroundSync {
+    private const val SYNC_TIMEOUT_SECONDS = 45L
+    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    val isRunning: Boolean get() = running.get()
+
+    suspend fun run(app: Context, trigger: String): Result {
+        if (!running.compareAndSet(false, true)) {
+            RingSyncAlarm.log(app, "Background sync ($trigger): skipped, another pass running")
+            return Result.success()
+        }
+        var outcome = "error"
+        try {
+            return runPassLocked(app) { outcome = it }
+        } finally {
+            running.set(false)
+            RingSyncAlarm.log(app, "Background sync ($trigger): $outcome")
+        }
+    }
+
+    /** One pass; [report] receives a short outcome for the SYNC diagnostics log. */
+    private suspend fun runPassLocked(app: Context, report: (String) -> Unit): Result {
+        report("skipped, app in foreground")
         // The foreground app owns the live GATT. An overdue periodic job can start at the same
         // moment as MainActivity after process launch; opening a second client interleaves both
         // command queues and lets this worker's cleanup disconnect the UI-owned session.
         if (isAppForeground()) return Result.success()
 
-        val keyStore = ApiKeyStore(applicationContext)
-        val db = PulseLoopDatabase.getInstance(applicationContext)
+        val keyStore = ApiKeyStore(app)
+        val db = PulseLoopDatabase.getInstance(app)
 
         // Only sync if a REAL ring was previously paired — the seeded demo device row
         // must not trigger background BLE connects.
         val device = db.deviceDao().currentReal()
+        report("skipped, no paired ring")
         if (device == null) return Result.success()
 
         // The adaptive monitor holds the app's own link while it samples; a second client would
         // fight it for GATT ownership. Its samples feed the evaluation directly.
+        report("skipped, adaptive monitor holds the link")
         if (com.pulseloop.context.MonitorService.holdsRingLink) return Result.success()
+        RingSyncAlarm.markAttempt(app)
+        report("started")
 
         // A cold background process (the app was swiped away or killed — routine on MagicOS) has
         // no UI composition, so nothing would persist what this pass receives. Keep a subscriber
         // on the bus: the app's own when it exists, else a process-level one.
         (com.pulseloop.AppServices.existing()?.persistence
-            ?: BackgroundPersistence.get(applicationContext)).start()
+            ?: BackgroundPersistence.get(app)).start()
 
-        val bleClient = RingBLEClient(applicationContext, transientOwner = true)
+        val bleClient = RingBLEClient(app, transientOwner = true)
 
         // Load the persisted measurement config + profile up front so the connect
         // handshake pushes the user's saved settings. Null (never saved) makes the
@@ -100,7 +143,9 @@ class RingSyncWorker(
         return try {
             withTimeout(SYNC_TIMEOUT_SECONDS * 1000L) {
                 // Connect to last-known ring
+                report("skipped, no BLE permission")
                 if (!bleClient.hasPermissions()) return@withTimeout Result.success()
+                report("connecting")
 
                 var connected = false
                 bleClient.onConnected = {
@@ -119,12 +164,14 @@ class RingSyncWorker(
                 while (!connected && waited < 20_000L) {
                     delay(1000)
                     waited += 1000
-                    if (isAppForeground()) return@withTimeout Result.success()
+                    if (isAppForeground()) { report("yielded to app"); return@withTimeout Result.success() }
                 }
 
                 if (!connected) {
+                    report("ring not reached in 20 s")
                     return@withTimeout Result.success()
                 }
+                report("connected, yielded to app")
 
                 // Let data stream in after connect, but yield ownership promptly if the app opens.
                 repeat(15) {
@@ -135,13 +182,16 @@ class RingSyncWorker(
                 // Health Connect export trigger (Phase 1): the background sync has streamed its
                 // data — run the (debounced) export pass. The foreground path triggers the same
                 // worker via the SyncProgress("done") event, so both sync owners cover it.
-                HealthConnectExportWorker.enqueue(applicationContext)
-                RingHubSyncWorker.enqueue(applicationContext)
+                HealthConnectExportWorker.enqueue(app)
+                RingHubSyncWorker.enqueue(app)
                 synced = true
+                report("synced")
 
                 Result.success()
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.TimeoutCancellationException) report("timed out after ${SYNC_TIMEOUT_SECONDS} s")
+            else report("failed: ${e.javaClass.simpleName}")
             Result.retry()
         } finally {
             // This client is worker-owned. Cancel its watchdog as well as closing GATT so it
@@ -156,11 +206,11 @@ class RingSyncWorker(
             }
             // Adaptive sampling: this pass is the periodic check (see AdaptiveController). Only
             // after this worker's own client let go of GATT, so a monitor episode can connect.
-            if (synced) com.pulseloop.adaptive.AdaptiveController.onSyncCompleted(applicationContext)
+            if (synced) com.pulseloop.adaptive.AdaptiveController.onSyncCompleted(app)
         }
     }
 
-    private suspend fun isAppForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
+    suspend fun isAppForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
         ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
     }
 }

@@ -295,6 +295,9 @@ class ContextBootReceiver : BroadcastReceiver() {
                 com.pulseloop.context.ActivityRecognitionManager.sync(context)
                 com.pulseloop.context.MonitorService.refresh(context)
                 com.pulseloop.context.PhoneContextWorker.schedule(context)
+                // Re-arms the ring-sync alarm too (alarms do not survive a reboot or an update).
+                // The pass itself returns at once when no real ring is paired.
+                com.pulseloop.service.RingSyncWorker.schedule(context)
             }
         }
     }

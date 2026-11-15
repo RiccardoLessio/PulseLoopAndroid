@@ -72,6 +72,9 @@ class MonitorService : Service() {
 
         @Volatile private var instance: MonitorService? = null
 
+        /** True while the service is alive — its foreground priority keeps the process unfrozen. */
+        val isRunning: Boolean get() = instance != null
+
         private val LOCATION_TYPE =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION else 0
         private val LINK_TYPE =
