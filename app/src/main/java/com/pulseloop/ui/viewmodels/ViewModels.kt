@@ -208,8 +208,12 @@ class SleepViewModel(
     private val db: PulseLoopDatabase,
     /** The night-bridging rule a record delete/edit re-segments with — the sync's own (issue #105). */
     private val gapBridge: () -> com.pulseloop.service.SleepGapBridge = { com.pulseloop.service.SleepGapBridge.NONE },
+    /** "Sembra che tu abbia dormito…" — app-side nap/doze suggestions the ring misses. */
+    private val possibleSleep: com.pulseloop.service.PossibleSleepSuggestions? = null,
 ) : ViewModel() {
     data class SleepState(
+        /** An unanswered possible-sleep stretch to confirm with one tap, or null. */
+        val sleepSuggestion: com.pulseloop.service.PossibleSleepDetector.Candidate? = null,
         val range: SleepRangeKey = SleepRangeKey.DAY,
         // Today sleep tile — ALWAYS the true reference night, independent of Day-view navigation.
         val lastNight: SleepSessionEntity? = null,
@@ -255,6 +259,29 @@ class SleepViewModel(
         viewModelScope.launch { try { rebuild(_state.value.range) } catch (_: Exception) {} }
     }
 
+    /** Confirm the shown suggestion: stored as an inferred sleep session (the session flow rebuilds). */
+    fun confirmSleepSuggestion() {
+        val candidate = _state.value.sleepSuggestion ?: return
+        _state.update { it.copy(sleepSuggestion = null) }
+        viewModelScope.launch {
+            try { possibleSleep?.confirm(candidate) } catch (_: Exception) {}
+            refreshSleepSuggestion()
+        }
+    }
+
+    /** Ignore the shown suggestion; it does not come back. */
+    fun ignoreSleepSuggestion() {
+        val candidate = _state.value.sleepSuggestion ?: return
+        possibleSleep?.ignore(candidate)
+        _state.update { it.copy(sleepSuggestion = null) }
+        viewModelScope.launch { refreshSleepSuggestion() }
+    }
+
+    private suspend fun refreshSleepSuggestion() {
+        val next = try { possibleSleep?.current() } catch (_: Exception) { null }
+        _state.update { it.copy(sleepSuggestion = next) }
+    }
+
     init {
         // Any sleep-table change retriggers a rebuild of the selected range.
         viewModelScope.launch {
@@ -266,6 +293,7 @@ class SleepViewModel(
     }
 
     private suspend fun rebuild(range: SleepRangeKey) {
+        refreshSleepSuggestion()
         val blocksCache = HashMap<String, List<SleepStageBlockEntity>>()
         suspend fun blocksFor(id: String): List<SleepStageBlockEntity> =
             blocksCache.getOrPut(id) { db.sleepStageBlockDao().forSession(id) }

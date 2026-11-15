@@ -108,6 +108,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
     navController: androidx.navigation.NavController?,
     viewModel: SleepViewModel?,
 ) {
+    // App-side nap/doze suggestion (the R09 never records naps): one tap to keep or drop it.
+    state.sleepSuggestion?.let { candidate ->
+        item(key = "sleep-suggestion-${candidate.start}") {
+            PossibleSleepCard(
+                candidate = candidate,
+                onConfirm = { viewModel?.confirmSleepSuggestion() },
+                onIgnore = { viewModel?.ignoreSleepSuggestion() },
+            )
+        }
+    }
     // Date stepper: ‹ older · date · newer › (iOS #84).
     item { SleepDayNavHeader(state, viewModel) }
 
@@ -148,6 +158,42 @@ private fun androidx.compose.foundation.lazy.LazyListScope.dayItems(
             chips = summary?.let { parseChipsJson(it.chipsJSON) } ?: fallback?.chips ?: emptyList(),
             onTap = { navController?.navigate("coach") },
         )
+    }
+}
+
+/** "Sembra che tu abbia dormito 14:10–14:55 — confermi?" with Conferma / Ignora. */
+@Composable
+private fun PossibleSleepCard(
+    candidate: com.pulseloop.service.PossibleSleepDetector.Candidate,
+    onConfirm: () -> Unit,
+    onIgnore: () -> Unit,
+) {
+    val zone = java.time.ZoneId.systemDefault()
+    val day = java.time.Instant.ofEpochMilli(candidate.start).atZone(zone).toLocalDate()
+    val today = java.time.LocalDate.now(zone)
+    val dayLabel = when (day) {
+        today -> "oggi"
+        today.minusDays(1) -> "ieri"
+        else -> day.format(java.time.format.DateTimeFormatter.ofPattern("d/M"))
+    }
+    VisualizationCard(
+        eyebrow = "Sonno non registrato dall'anello",
+        title = "Sembra che tu abbia dormito $dayLabel ${clockTime(candidate.start)}–${clockTime(candidate.end)} — confermi?",
+        legend = false,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "${SleepFormat.duration(candidate.minutes)} con battito al livello del sonno " +
+                    "(~${candidate.medianBpm} bpm), nessun passo e schermo spento. " +
+                    "Confermando lo aggiungi come sonno (senza fasi).",
+                fontSize = 12.sp,
+                color = PulseColors.textMuted,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onConfirm) { Text("Conferma") }
+                TextButton(onClick = onIgnore) { Text("Ignora") }
+            }
+        }
     }
 }
 

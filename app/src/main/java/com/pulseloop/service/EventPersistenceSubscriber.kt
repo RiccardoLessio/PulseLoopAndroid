@@ -632,8 +632,10 @@ class EventPersistenceSubscriber(
         val ringEnd = ts + stages.size * 60_000L
         // Include legacy rows keyed to the wrong day if they overlap this packet. Reconciliation
         // re-points their surviving blocks to the correct waking day.
-        val overlapping = db.sleepSessionDao().ringOverlapping(ts, ringEnd)
-        val existing = (db.sleepSessionDao().ringAllByDay(dayStart) + overlapping).distinctBy { it.id }
+        // User-confirmed inferred sessions (no ring record behind them) are left out of the
+        // reconcile entirely: see SleepSessionDao.ringSyncedAllByDay.
+        val overlapping = db.sleepSessionDao().ringSyncedOverlapping(ts, ringEnd)
+        val existing = (db.sleepSessionDao().ringSyncedAllByDay(dayStart) + overlapping).distinctBy { it.id }
         val existingBlocks =
             if (existing.isEmpty()) emptyList()
             else db.sleepStageBlockDao().forSessions(existing.map { it.id })
@@ -683,6 +685,10 @@ class EventPersistenceSubscriber(
         )
 
         reconcileWakingDay(dayStart, existing, dayBlocks)
+        // A ring record that now covers an inferred session's time is the measurement; the
+        // inference it was standing in for goes (same rule as an edit's added minutes: the ring
+        // beats the estimate). Only the record's own interval, never anything else on the day.
+        db.sleepSessionDao().deleteInferredOverlapping(packetStart, packetEnd)
     }
 
     /**

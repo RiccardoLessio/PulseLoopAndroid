@@ -217,6 +217,9 @@ interface ActivityBucketDao {
     @Query("SELECT * FROM activity_buckets WHERE date = :day ORDER BY startEpoch ASC")
     suspend fun byDay(day: Long): List<ActivityBucketEntity>
 
+    @Query("SELECT * FROM activity_buckets WHERE startEpoch >= :from AND startEpoch < :to AND source NOT IN ('demo','mock') ORDER BY startEpoch ASC")
+    suspend fun between(from: Long, to: Long): List<ActivityBucketEntity>
+
     /** Distinct past days that have synced buckets — the DataRepairs recompute scope. */
     @Query("SELECT DISTINCT date FROM activity_buckets WHERE date < :day ORDER BY date ASC")
     suspend fun daysBefore(day: Long): List<Long>
@@ -374,6 +377,25 @@ interface SleepSessionDao {
     /** All synced (non-demo) sessions for a waking day, earliest first — the reconcile target. */
     @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw != 'demo' ORDER BY startAt ASC")
     suspend fun ringAllByDay(day: Long): List<SleepSessionEntity>
+
+    /**
+     * The ring sync's reconcile target: [ringAllByDay] minus user-confirmed inferred sessions
+     * (`sourceRaw = 'inferred'`, PossibleSleepSuggestions). Those have no ring record behind them,
+     * so a re-sync must never re-segment, merge or drop them.
+     */
+    @Query("SELECT * FROM sleep_sessions WHERE date = :day AND sourceRaw NOT IN ('demo','inferred') ORDER BY startAt ASC")
+    suspend fun ringSyncedAllByDay(day: Long): List<SleepSessionEntity>
+
+    @Query("SELECT * FROM sleep_sessions WHERE sourceRaw NOT IN ('demo','inferred') AND startAt < :end AND endAt > :start")
+    suspend fun ringSyncedOverlapping(start: Long, end: Long): List<SleepSessionEntity>
+
+    /** Real (non-demo) sessions of any source overlapping a time window. */
+    @Query("SELECT * FROM sleep_sessions WHERE sourceRaw NOT IN ('demo','mock') AND startAt < :end AND endAt > :start ORDER BY startAt ASC")
+    suspend fun realOverlapping(start: Long, end: Long): List<SleepSessionEntity>
+
+    /** Inferred sessions a ring record now covers — the ring's measurement supersedes them. */
+    @Query("DELETE FROM sleep_sessions WHERE sourceRaw = 'inferred' AND startAt < :end AND endAt > :start")
+    suspend fun deleteInferredOverlapping(start: Long, end: Long): Int
 
     @Query("SELECT * FROM sleep_sessions ORDER BY date DESC LIMIT :limit")
     suspend fun recent(limit: Int = 7): List<SleepSessionEntity>
